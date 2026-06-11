@@ -1079,8 +1079,9 @@ const Game=(()=>{
     const myTeam=Math.max(0,Math.min(5,parseInt(document.getElementById('myteam').value)||0));
     const p=spawnPlayer(state.me.id,state.me.name,myTeam);
     if(state.gameMode==='race' && state.raceCheckpoints.length>=2){
-      // grid start on the c1->c2 line so everyone thrusts straight through c1 toward c2
-      const pose=raceStartPose(0);
+      // arc grid: every racer equidistant from c1, within ±15° of the c1->c2 line
+      const aiN=Math.max(0,Math.min(12,parseInt(document.getElementById('aicount').value)||0));
+      const pose=raceStartPose(0, aiN+1);
       p.x=pose.x; p.y=pose.y; p.vx=0; p.vy=0; p.rot=pose.rot;
       p.checkpoint=0; p.lap=0; p.raceTime=0;
     } else {
@@ -1447,22 +1448,35 @@ const Game=(()=>{
     }
   }
 
-  // Race grid pose: places racers on the c1->c2 line, just past c1 on the far side,
-  // facing toward c1 (and beyond to c2). Slot 0 sits on the line; higher slots fan
-  // out perpendicular, alternating sides so the field doesn't stack on one wing.
-  function raceStartPose(slot){
+  // Race grid pose: arc-shaped start so every racer is equidistant from c1 and
+  // points within ±15° of the c1->c2 line (no big turn after the first checkpoint).
+  // If the field is too wide to fit in 30° at min spacing, push the whole arc back
+  // until adjacent chord distance >= MIN_SPACING.
+  function raceStartPose(slot, total){
     const cp1=state.raceCheckpoints[0], cp2=state.raceCheckpoints[1];
     const dx=cp2.x-cp1.x, dy=cp2.y-cp1.y;
     const len=Math.hypot(dx,dy)||1;
-    const ux=dx/len, uy=dy/len;                  // unit vector c1 -> c2
-    const back=(cp1.r||140)+240;                  // outside the cp1 ring (extra buffer so wide grids are fair)
-    const baseX=cp1.x-ux*back, baseY=cp1.y-uy*back;
-    const lateral = slot===0 ? 0 : (slot%2===1 ? Math.ceil(slot/2) : -Math.ceil(slot/2));
-    const spacing=80;
+    const ux=dx/len, uy=dy/len;                   // unit vector c1 -> c2
+    const MIN_BACK = (cp1.r||140) + 240;
+    const ARC_HALF = Math.PI/12;                  // 15°
+    const MIN_SPACING = 80;
+    const N = Math.max(1, total||1);
+    // Slot index → angular position, alternating around center: 0, +1, -1, +2, -2, ...
+    const slotIdx = slot===0 ? 0 : (slot%2===1 ? Math.ceil(slot/2) : -Math.ceil(slot/2));
+    const maxAbs = Math.max(1, Math.ceil((N-1)/2));
+    const dTheta = ARC_HALF / maxAbs;             // angular spacing between adjacent slots
+    // Distance R chosen so the chord between adjacent slots is at least MIN_SPACING.
+    const R = N>1 ? Math.max(MIN_BACK, MIN_SPACING / (2*Math.sin(dTheta/2))) : MIN_BACK;
+    const theta = slotIdx * dTheta;
+    // "Behind" vector = -u; rotate by theta around c1 to get this slot's bearing.
+    const bx=-ux, by=-uy;
+    const cosT=Math.cos(theta), sinT=Math.sin(theta);
+    const rx = bx*cosT - by*sinT;
+    const ry = bx*sinT + by*cosT;
     return {
-      x: baseX + (-uy)*lateral*spacing,           // perpendicular = rotate (ux,uy) by 90°
-      y: baseY + ( ux)*lateral*spacing,
-      rot: Math.atan2(uy, ux),
+      x: cp1.x + rx*R,
+      y: cp1.y + ry*R,
+      rot: Math.atan2(-ry, -rx),                  // face back toward c1
     };
   }
   function spawnAIs(){
@@ -1472,7 +1486,7 @@ const Game=(()=>{
       const team=(i%5)+1; // round-robin across teams 1..5
       const bot=spawnPlayer(id,'Bot-'+(i+1),team);
       if(state.gameMode==='race' && state.raceCheckpoints.length>=2){
-        const pose=raceStartPose(i+1);
+        const pose=raceStartPose(i+1, n+1);
         bot.x=pose.x; bot.y=pose.y;
         bot.rot=pose.rot;
         bot.checkpoint=0; bot.lap=0;
