@@ -2934,7 +2934,9 @@ const Game=(()=>{
 
   function spawnHitArc(targetPlayer, bullet){
     if(targetPlayer.id!==state.me.id) return; // only show your own hits
-    const ang=Math.atan2(bullet.y-targetPlayer.y, bullet.x-targetPlayer.x); // points TOWARD bullet
+    // Direction the shot came FROM = opposite of bullet's travel vector.
+    // (Don't use bullet position at impact — that's just where it touched the hull.)
+    const ang=Math.atan2(-bullet.vy, -bullet.vx);
     state.hits.push({angle:ang, life:60, maxLife:60});
   }
   function spawnExplosion(x,y,size){
