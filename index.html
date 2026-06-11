@@ -1254,6 +1254,26 @@ const Game=(()=>{
     }
     return [dx, dy, danger];
   }
+  // Nudge steering away from asteroids the bot is heading toward. Only counts asteroids
+  // in the forward cone of the desired direction so the bot won't dodge things behind it.
+  function avoidAsteroids(bot, dx, dy){
+    const RANGE=350;        // surface-distance cutoff
+    for(const a of state.asteroids){
+      const adx=bot.x-a.x, ady=bot.y-a.y;
+      const d2=adx*adx+ady*ady;
+      const cutoff=RANGE+a.r;
+      if(d2 > cutoff*cutoff) continue;
+      const d=Math.sqrt(d2)||1;
+      // Forward-cone gate: vector toward-asteroid dotted with desired direction.
+      if(((-adx)*dx + (-ady)*dy) <= 0) continue;
+      const surfDist = Math.max(0, d - a.r);
+      if(surfDist > RANGE) continue;
+      const repel = 600 * (1 - surfDist/RANGE);   // ramps up as we get close
+      dx += adx/d * repel;
+      dy += ady/d * repel;
+    }
+    return [dx, dy];
+  }
   // Predict where to aim so a bullet fired now intersects a moving target.
   // Solves in the shooter's reference frame: bullet leaves at bulletSpeed, target
   // starts at relative position rp with relative velocity rv. Find smallest t>0
@@ -1722,6 +1742,7 @@ const Game=(()=>{
         let dx=tx-bot.x, dy=ty-bot.y;
         let danger;
         [dx,dy,danger]=avoidWells(bot,dx,dy);
+        [dx,dy]=avoidAsteroids(bot,dx,dy);
         const desired=Math.atan2(dy,dx);
         let diff=desired-bot.rot;
         while(diff>Math.PI)diff-=Math.PI*2;
@@ -1770,6 +1791,7 @@ const Game=(()=>{
       } else {
         let dx=Math.cos(bot.rot), dy=Math.sin(bot.rot), danger;
         [dx,dy,danger]=avoidWells(bot,dx,dy);
+        [dx,dy]=avoidAsteroids(bot,dx,dy);
         if(danger){
           const desired=Math.atan2(dy,dx);
           let diff=desired-bot.rot;
@@ -1822,6 +1844,7 @@ const Game=(()=>{
       if(isCombat && targetShip){ const lead=leadTarget(pr,targetShip,8); tx=lead.tx; ty=lead.ty; }
       let dx=tx-pr.x, dy=ty-pr.y, danger;
       [dx,dy,danger]=avoidWells(pr,dx,dy);
+      [dx,dy]=avoidAsteroids(pr,dx,dy);
       const desired=Math.atan2(dy,dx);
       let diff=desired-pr.rot;
       while(diff>Math.PI)diff-=Math.PI*2;
