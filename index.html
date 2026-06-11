@@ -1550,13 +1550,16 @@ const Game=(()=>{
         let joyR=0, joyT=0;
         if(state.joy.active){
           const mag=Math.hypot(state.joy.x,state.joy.y);
-          if(mag>0.15){
+          // Two-band stick: small deflection turns only; pulling past THRUST_ON ramps thrust.
+          // Gives "barely past the line = ~10% thrust" feel.
+          const TURN_DEAD=0.15, THRUST_ON=0.55;
+          if(mag>TURN_DEAD){
             const ang=Math.atan2(-state.joy.y,state.joy.x); // screen Y is down, world Y is up
             let diff=ang-me.rot;
             while(diff>Math.PI)diff-=Math.PI*2;
             while(diff<-Math.PI)diff+=Math.PI*2;
             joyR=Math.max(-1,Math.min(1,diff*2));
-            joyT=Math.min(1,mag);
+            if(mag>THRUST_ON) joyT=Math.min(1,(mag-THRUST_ON)/(1-THRUST_ON));
           }
         }
         if(state.keys.ArrowLeft||state.keys.KeyA) me.rot+=stats.turn;

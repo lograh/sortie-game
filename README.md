@@ -56,14 +56,21 @@ magick icon.svg -resize 180x180 apple-touch-icon.png
 
 Drop the resulting `apple-touch-icon.png` next to `index.html` and iOS will pick it up automatically (the `<link>` tag is already in the head).
 
-## Known issues / brainstorm
+## Touch controls
 
-- **Combined thrust + turn touch control feels weird.** On a single virtual stick, turning and thrusting are coupled — you can't gently steer while coasting, and you can't thrust straight without committing to a heading from the stick angle. Some directions to consider:
-  - Split into two zones: left half = turn-only (rotate to where you drag), right side already has fire/boost — could add a dedicated thrust button.
-  - Tilt-to-steer (DeviceOrientation) for turn, on-screen button for thrust.
-  - Tap-to-aim: tap anywhere in the play area to set a target heading; hold to thrust toward it.
-  - "Lunar Lander" style: separate small thrust pedal + rotate buttons (less elegant but unambiguous).
-  - Keep the joystick but decouple magnitude: any deflection = full thrust, angle = turn target (so light touches still steer hard).
+The left thumb summons a floating joystick wherever you first touch — the origin is your initial touch point, so you never lurch on contact. Stick behavior is two-band:
+
+- Small deflection (just past the dead zone): **turn only.** Hold the stick lightly off-center to rotate toward that heading without thrusting.
+- Pull past about half travel: **thrust ramps in.** Just past the line ≈ 10% thrust; full deflection = full thrust. Lets you cruise at low power if you stop pulling at the right point.
+
+Right side has Fire and Boost buttons.
+
+### Future touch ideas
+
+If the dead-zone single-stick still doesn't feel right, alternatives worth trying:
+- Turn-only stick on the left + dedicated thrust button on the right.
+- Tap-to-aim: tap a spot in the play area to set a target heading; hold to thrust toward it.
+- Decouple turn rate from stick magnitude entirely (any deflection = max turn rate toward heading).
 
 ## License
 
