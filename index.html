@@ -1718,7 +1718,25 @@ const Game=(()=>{
         const targetingCheckpoint = state.gameMode==='race' && !isShip && gotTarget;
         // "no combat" race only suppresses racer-vs-racer fire; pirates are always fair game.
         const suppressRacerFire = state.gameMode==='race' && !state.raceCombat && isShip && targetShip && !targetShip.pirate;
-        if(!targetingCheckpoint && !suppressRacerFire && !danger && Math.abs(diff)<0.18 && bot.fireCd<=0){ fireGuns(bot); }
+        const aimedAndReady = !danger && Math.abs(diff)<0.18 && bot.fireCd<=0;
+        let fire = aimedAndReady && !targetingCheckpoint && !suppressRacerFire;
+        // Combat race: bots stay on the racing line but opportunistically shoot any hostile
+        // ship that drifts into their forward cone (they wouldn't otherwise — target is a checkpoint).
+        if(!fire && aimedAndReady && state.gameMode==='race' && state.raceCombat){
+          for(const pid in state.players){
+            if(pid===aid) continue;
+            const op=state.players[pid];
+            if(!op || !op.alive || op.docked || op.grace>0 || op.trader) continue;
+            if(!op.pirate && op.team!==0 && op.team===bot.team) continue;
+            const ddx=op.x-bot.x, ddy=op.y-bot.y;
+            if(ddx*ddx+ddy*ddy > 900*900) continue;
+            let ad=Math.atan2(ddy,ddx)-bot.rot;
+            while(ad>Math.PI)ad-=Math.PI*2;
+            while(ad<-Math.PI)ad+=Math.PI*2;
+            if(Math.abs(ad)<0.20){ fire=true; break; }
+          }
+        }
+        if(fire) fireGuns(bot);
       } else {
         let dx=Math.cos(bot.rot), dy=Math.sin(bot.rot), danger;
         [dx,dy,danger]=avoidWells(bot,dx,dy);
