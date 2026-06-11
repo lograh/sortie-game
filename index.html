@@ -1697,7 +1697,10 @@ const Game=(()=>{
           bot.vy+=Math.sin(bot.rot)*stats.thrust*thrustMult;
           botThrust=true;
         }
-        if(!danger && Math.abs(diff)<0.18 && bot.fireCd<=0){ fireGuns(bot); }
+        const noCombatRace = state.gameMode==='race' && !state.raceCombat;
+        // In race mode, target is the next checkpoint — firing at it is pointless and confusing.
+        const targetingCheckpoint = state.gameMode==='race' && !isShip;
+        if(!noCombatRace && !targetingCheckpoint && !danger && Math.abs(diff)<0.18 && bot.fireCd<=0){ fireGuns(bot); }
       } else {
         let dx=Math.cos(bot.rot), dy=Math.sin(bot.rot), danger;
         [dx,dy,danger]=avoidWells(bot,dx,dy);
@@ -1764,7 +1767,8 @@ const Game=(()=>{
         pr.vy+=Math.sin(pr.rot)*stats.thrust*thrustMult;
         pr.thrusting=true;
       } else { pr.thrusting=false; }
-      if(!danger && isCombat && Math.abs(diff)<0.18 && pr.fireCd<=0){ fireGuns(pr); }
+      const noCombatRace = state.gameMode==='race' && !state.raceCombat;
+      if(!danger && isCombat && !noCombatRace && Math.abs(diff)<0.18 && pr.fireCd<=0){ fireGuns(pr); }
       pr.fireCd=Math.max(0,pr.fireCd-1);
       const maxSp=danger?10:7;
       const sp=Math.hypot(pr.vx,pr.vy); if(sp>maxSp){ pr.vx*=maxSp/sp; pr.vy*=maxSp/sp; }
