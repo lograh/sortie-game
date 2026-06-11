@@ -176,9 +176,11 @@
             <button onclick="Game.startSolo()">Start Solo</button>
           </div>
           <hr>
-          <div class="row dim">LAN / Internet — WebRTC manual handshake:</div>
+          <div class="row dim">LAN / Internet — WebRTC handshake. Host taps Create Offer, taps Share, sends link. Friend opens link, taps Accept, taps Share, sends link back. Host pastes the answer link and taps Accept Pasted Answer.</div>
           <div class="row"><button onclick="Game.makeOffer()">Create Offer</button> <button onclick="Game.acceptOffer()">Accept Pasted Offer</button> <button onclick="Game.acceptAnswer()">Accept Pasted Answer</button></div>
-          <textarea id="sdp" rows="5" placeholder="Paste offer/answer SDP here"></textarea>
+          <div class="row"><button onclick="Game.sdpCopy()">Copy</button> <button onclick="Game.sdpPaste()">Paste</button> <button onclick="Game.sdpShare()">Share Link</button></div>
+          <textarea id="sdp" rows="3" placeholder="Paste offer/answer link or SDP here"></textarea>
+          <div id="sdpLink" class="row dim" style="font-size:11px;word-break:break-all;display:none"></div>
           <div class="row dim" id="lobbyStatus">Idle.</div>
           <div class="row dim" style="font-size:11px">Desktop: <span class="tag">W/A/S/D</span> · <span class="tag">Space</span> fire · <span class="tag">Shift</span> boost · <span class="tag">T</span> dock · <span class="tag">M</span> map · <span class="tag">1-6</span> chat. Race: <span class="tag">B</span> super boost · <span class="tag">G</span> gas cloud.</div>
         </div>
@@ -3499,33 +3501,150 @@ const Game=(()=>{
   /* -------- Manual WebRTC -------- */
   const ICE={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
   let pendingPC=null;
+  let lastShareUrl=null;
+
+  // gzip + URL-safe base64 (no padding). Falls back to plain base64 if CompressionStream is unavailable.
+  async function packSdp(jsonStr){
+    if(typeof CompressionStream === 'undefined') return btoa(unescape(encodeURIComponent(jsonStr)));
+    const stream = new Blob([jsonStr]).stream().pipeThrough(new CompressionStream('gzip'));
+    const buf = await new Response(stream).arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let bin=''; for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  }
+  async function unpackSdp(packed){
+    const b64 = packed.replace(/-/g,'+').replace(/_/g,'/');
+    const padded = b64 + '==='.slice((b64.length+3)%4);
+    let bin; try { bin=atob(padded); } catch(_) { return null; }
+    const bytes=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+    if(typeof DecompressionStream !== 'undefined'){
+      try {
+        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+        const buf = await new Response(stream).arrayBuffer();
+        return new TextDecoder().decode(buf);
+      } catch(_) { /* fall through */ }
+    }
+    try { return decodeURIComponent(escape(bin)); } catch(_) { return null; }
+  }
+  // Pull an SDP JSON string out of arbitrary input: raw JSON, share URL with #offer=/#answer=, or a bare packed blob.
+  async function extractSdp(text){
+    if(!text) return null;
+    text = text.trim();
+    const m = text.match(/[#&](?:offer|answer)=([A-Za-z0-9_\-]+)/);
+    if(m) return await unpackSdp(m[1]);
+    if(text.startsWith('{')) return text;
+    if(/^[A-Za-z0-9_\-]+$/.test(text) && text.length>40){
+      const j = await unpackSdp(text); if(j) return j;
+    }
+    return text;
+  }
+  function shareUrlFor(role, packed){
+    return location.origin + location.pathname + '#' + role + '=' + packed;
+  }
+  function showShareUrl(url){
+    lastShareUrl = url;
+    const el = document.getElementById('sdpLink');
+    if(!el) return;
+    el.style.display='block';
+    el.textContent = url;
+  }
+  function clearShareUrl(){
+    lastShareUrl=null;
+    const el=document.getElementById('sdpLink');
+    if(el){ el.style.display='none'; el.textContent=''; }
+  }
+
   async function makeOffer(){
     state.me.name=document.getElementById('pname').value||state.me.name;
+    clearShareUrl();
     const pc=new RTCPeerConnection(ICE);
     const dc=pc.createDataChannel('g');
     setupDC(pc,dc);
-    pc.onicecandidate=e=>{ if(!e.candidate) document.getElementById('sdp').value=JSON.stringify(pc.localDescription); };
+    pc.onicecandidate=async e=>{
+      if(!e.candidate){
+        const sdp = JSON.stringify(pc.localDescription);
+        document.getElementById('sdp').value = sdp;
+        showShareUrl(shareUrlFor('offer', await packSdp(sdp)));
+        document.getElementById('lobbyStatus').textContent='Offer ready — tap Share Link and send to your friend.';
+      }
+    };
     await pc.setLocalDescription(await pc.createOffer());
     pendingPC=pc;
-    document.getElementById('lobbyStatus').textContent='Offer being generated... wait for full SDP, then send to friend.';
+    document.getElementById('lobbyStatus').textContent='Offer being generated...';
   }
   async function acceptOffer(){
     state.me.name=document.getElementById('pname').value||state.me.name;
-    const off=JSON.parse(document.getElementById('sdp').value);
+    const raw = await extractSdp(document.getElementById('sdp').value);
+    if(!raw){ document.getElementById('lobbyStatus').textContent='No valid offer in textarea — paste the link first.'; return; }
+    let off; try { off = JSON.parse(raw); } catch(_) { document.getElementById('lobbyStatus').textContent='Offer is not valid SDP.'; return; }
+    clearShareUrl();
     const pc=new RTCPeerConnection(ICE);
     pc.ondatachannel=e=>setupDC(pc,e.channel);
-    pc.onicecandidate=e=>{ if(!e.candidate) document.getElementById('sdp').value=JSON.stringify(pc.localDescription); };
+    pc.onicecandidate=async e=>{
+      if(!e.candidate){
+        const sdp = JSON.stringify(pc.localDescription);
+        document.getElementById('sdp').value = sdp;
+        showShareUrl(shareUrlFor('answer', await packSdp(sdp)));
+        document.getElementById('lobbyStatus').textContent='Answer ready — tap Share Link and send back to the host.';
+      }
+    };
     await pc.setRemoteDescription(off);
     await pc.setLocalDescription(await pc.createAnswer());
     pendingPC=pc;
-    document.getElementById('lobbyStatus').textContent='Answer generating... copy from textarea and send back.';
+    document.getElementById('lobbyStatus').textContent='Answer generating...';
   }
   async function acceptAnswer(){
-    if(!pendingPC) return;
-    const ans=JSON.parse(document.getElementById('sdp').value);
+    if(!pendingPC){ document.getElementById('lobbyStatus').textContent='No pending offer in this tab — create one first.'; return; }
+    const raw = await extractSdp(document.getElementById('sdp').value);
+    if(!raw){ document.getElementById('lobbyStatus').textContent='No valid answer in textarea — paste the link first.'; return; }
+    let ans; try { ans = JSON.parse(raw); } catch(_) { document.getElementById('lobbyStatus').textContent='Answer is not valid SDP.'; return; }
     await pendingPC.setRemoteDescription(ans);
     document.getElementById('lobbyStatus').textContent='Connected!';
   }
+
+  async function sdpCopy(){
+    const text = lastShareUrl || document.getElementById('sdp').value;
+    if(!text){ document.getElementById('lobbyStatus').textContent='Nothing to copy yet.'; return; }
+    try { await navigator.clipboard.writeText(text); document.getElementById('lobbyStatus').textContent='Copied to clipboard.'; }
+    catch(_) { document.getElementById('lobbyStatus').textContent='Copy blocked — long-press the textarea and copy manually.'; }
+  }
+  async function sdpPaste(){
+    try {
+      const t = await navigator.clipboard.readText();
+      if(!t){ document.getElementById('lobbyStatus').textContent='Clipboard is empty.'; return; }
+      document.getElementById('sdp').value = t;
+      document.getElementById('lobbyStatus').textContent='Pasted — now tap Accept Pasted Offer or Accept Pasted Answer.';
+    } catch(_) { document.getElementById('lobbyStatus').textContent='Paste blocked — long-press the textarea and paste manually.'; }
+  }
+  async function sdpShare(){
+    const url = lastShareUrl;
+    const fallbackText = url || document.getElementById('sdp').value;
+    if(!fallbackText){ document.getElementById('lobbyStatus').textContent='Nothing to share yet — create or accept an offer first.'; return; }
+    if(navigator.share){
+      try { await navigator.share(url ? {title:'Join my Sortie game', url} : {title:'Sortie handshake', text: fallbackText}); return; }
+      catch(_) { /* user cancelled or failed — fall through to copy */ }
+    }
+    await sdpCopy();
+  }
+
+  // If the page was opened via a share link, prefill the textarea and prompt the user.
+  async function consumeInboundHash(){
+    const h = location.hash || '';
+    const m = h.match(/^#?(offer|answer)=([A-Za-z0-9_\-]+)/);
+    if(!m) return;
+    const j = await unpackSdp(m[2]);
+    if(!j) return;
+    const ta = document.getElementById('sdp'); if(ta) ta.value = j;
+    const status = document.getElementById('lobbyStatus');
+    if(status){
+      status.textContent = m[1]==='offer'
+        ? 'Offer received from friend. Tap "Accept Pasted Offer" to join.'
+        : 'Answer received. Tap "Accept Pasted Answer" to finish connecting.';
+    }
+    history.replaceState(null, '', location.pathname);
+  }
+  consumeInboundHash();
   function setupDC(pc,dc){
     const peerId=rid();
     Net.peers[peerId]={pc,dc};
@@ -3688,7 +3807,7 @@ const Game=(()=>{
   boostEl.addEventListener('pointercancel',()=>{ state.boostHeld=false; boostEl.classList.remove('on'); });
 
   return {
-    startSolo,makeOffer,acceptOffer,acceptAnswer,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,
+    startSolo,makeOffer,acceptOffer,acceptAnswer,sdpCopy,sdpPaste,sdpShare,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,
     castVote,sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
     lobbySetPlace,lobbyBuilderClick,lobbyGunCfg,lobbySaveDesign,lobbyResetDesign,lobbyLoadDesign,
   };
