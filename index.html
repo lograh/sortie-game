@@ -1246,6 +1246,29 @@ const Game=(()=>{
     }
     return [dx, dy, danger];
   }
+  // Predict where to aim so a bullet fired now intersects a moving target.
+  // Solves in the shooter's reference frame: bullet leaves at bulletSpeed, target
+  // starts at relative position rp with relative velocity rv. Find smallest t>0
+  // where |rp + rv*t| = bulletSpeed*t, then aim at the target's position at time t.
+  function leadTarget(shooter, target, bulletSpeed){
+    const rpx=target.x-shooter.x, rpy=target.y-shooter.y;
+    const rvx=(target.vx||0)-(shooter.vx||0), rvy=(target.vy||0)-(shooter.vy||0);
+    const a = rvx*rvx + rvy*rvy - bulletSpeed*bulletSpeed;
+    const b = 2*(rpx*rvx + rpy*rvy);
+    const c = rpx*rpx + rpy*rpy;
+    let t;
+    if(Math.abs(a) < 1e-6){
+      t = b!==0 ? -c/b : 0;
+    } else {
+      const disc = b*b - 4*a*c;
+      if(disc < 0) return { tx:target.x, ty:target.y }; // target outrunning bullet
+      const sq=Math.sqrt(disc);
+      const t1=(-b-sq)/(2*a), t2=(-b+sq)/(2*a);
+      t = t1>0 ? (t2>0?Math.min(t1,t2):t1) : t2;
+      if(!(t>0)) return { tx:target.x, ty:target.y };
+    }
+    return { tx: target.x + (target.vx||0)*t, ty: target.y + (target.vy||0)*t };
+  }
   function despawnNpc(idArr, id){
     delete state.players[id];
     const i=idArr.indexOf(id);
@@ -1629,7 +1652,7 @@ const Game=(()=>{
       if(!bot.alive) continue;
       const stats=shipStats(bot);
       bot._mass=stats.mass; bot._heatDecay=stats.heatDecay; bot._maxHeat=stats.maxHeat;
-      let bestD=Infinity, tx=0, ty=0, gotTarget=false, isShip=false;
+      let bestD=Infinity, tx=0, ty=0, gotTarget=false, isShip=false, targetShip=null;
       // race mode: aim for next checkpoint (advance progress just like player)
       if(state.gameMode==='race' && state.raceCheckpoints.length){
         advanceCheckpoint(bot);
@@ -1645,7 +1668,7 @@ const Game=(()=>{
           if(op.grace>0) continue;
           if(!op.pirate && op.team!==0 && op.team===bot.team) continue;
           const dx=op.x-bot.x, dy=op.y-bot.y, d=dx*dx+dy*dy;
-          if(d<bestD && d<1400*1400){ bestD=d; tx=op.x; ty=op.y; gotTarget=true; isShip=true; }
+          if(d<bestD && d<1400*1400){ bestD=d; tx=op.x; ty=op.y; gotTarget=true; isShip=true; targetShip=op; }
         }
         if(!gotTarget){
           for(const a of state.asteroids){
@@ -1657,6 +1680,7 @@ const Game=(()=>{
       }
       let botThrust=false;
       if(gotTarget){
+        if(isShip && targetShip){ const lead=leadTarget(bot,targetShip,8); tx=lead.tx; ty=lead.ty; }
         let dx=tx-bot.x, dy=ty-bot.y;
         let danger;
         [dx,dy,danger]=avoidWells(bot,dx,dy);
@@ -1717,13 +1741,14 @@ const Game=(()=>{
         pr.wanderCd=300+Math.floor(Math.random()*300);
       }
       // any nearby live player target overrides wander
-      let tx=pr.wanderTarget.x, ty=pr.wanderTarget.y, isCombat=false, bestD=Infinity;
+      let tx=pr.wanderTarget.x, ty=pr.wanderTarget.y, isCombat=false, bestD=Infinity, targetShip=null;
       for(const oid in state.players){
         const op=state.players[oid];
         if(!op.alive || op.pirate || op.trader || op.docked || op.grace>0) continue;
         const dx=op.x-pr.x, dy=op.y-pr.y, d=dx*dx+dy*dy;
-        if(d<bestD && d<1100*1100){ bestD=d; tx=op.x; ty=op.y; isCombat=true; }
+        if(d<bestD && d<1100*1100){ bestD=d; tx=op.x; ty=op.y; isCombat=true; targetShip=op; }
       }
+      if(isCombat && targetShip){ const lead=leadTarget(pr,targetShip,8); tx=lead.tx; ty=lead.ty; }
       let dx=tx-pr.x, dy=ty-pr.y, danger;
       [dx,dy,danger]=avoidWells(pr,dx,dy);
       const desired=Math.atan2(dy,dx);
