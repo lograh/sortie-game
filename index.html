@@ -1238,8 +1238,17 @@ const Game=(()=>{
       const d=Math.sqrt(d2);
       // closer = much stronger; cap to avoid runaway
       const repel = Math.min(2500, w.strength*12/Math.max(d,80));
-      dx += wdx/d*repel;
-      dy += wdy/d*repel;
+      const rx=wdx/d, ry=wdy/d;            // unit radial outward
+      // radial: push directly away from the well
+      dx += rx*repel;
+      dy += ry*repel;
+      // tangential: spiral out instead of fighting gravity head-on. Pick the perpendicular
+      // direction that matches the bot's current velocity (build angular momentum, don't fight it).
+      // Equal blend with radial gives a ~45° spiral path — classic escape trajectory.
+      const tx=-ry, ty=rx;                  // one perpendicular; sign chosen below
+      const sgn = ((bot.vx||0)*tx + (bot.vy||0)*ty) >= 0 ? 1 : -1;
+      dx += tx*sgn*repel;
+      dy += ty*sgn*repel;
       if(d<1400) danger=true;
     }
     return [dx, dy, danger];
