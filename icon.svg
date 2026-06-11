@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#000"/>
+  <g transform="rotate(-45 256 256)">
+    <polygon points="436,256 130,364 184,256 130,148"
+             fill="none" stroke="#9ce5ff" stroke-width="10"
+             stroke-linejoin="round" stroke-linecap="round"
+             style="filter:drop-shadow(0 0 8px #2af)"/>
+  </g>
+</svg>

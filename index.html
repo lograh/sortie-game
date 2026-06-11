@@ -1,0 +1,3533 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Sortie</title>
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#000000">
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#000;color:#cfe;font-family:Consolas,monospace;overflow:hidden;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;touch-action:none;overscroll-behavior:none}
+  #stage{position:fixed;inset:0}
+  #cv{position:absolute;inset:0;width:100%;height:100%;display:block;background:#000;touch-action:none}
+  #fx{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:block}
+  .panel{position:absolute;background:rgba(8,16,24,.86);border:1px solid #2af;border-radius:6px;color:#cfe;box-shadow:0 0 12px #08f6;font-size:13px;pointer-events:auto}
+  .panel h3{margin:0;padding:8px 12px;font-size:13px;background:#114;cursor:move;border-bottom:1px solid #2af;border-radius:6px 6px 0 0;touch-action:none}
+  .panel .body{padding:10px 12px;max-height:80vh;overflow:auto;-webkit-overflow-scrolling:touch}
+  button{background:#024;color:#cfe;border:1px solid #2af;border-radius:3px;padding:5px 10px;font-family:inherit;cursor:pointer;font-size:13px;min-height:30px;touch-action:manipulation}
+  button:hover{background:#046}
+  button.bad{border-color:#f55;color:#fcc}
+  button.good{border-color:#5f8;color:#cfc}
+  button.active{background:#046;border-color:#7df}
+  #lobby{left:50%;top:50%;transform:translate(-50%,-50%);width:min(1200px,96vw);max-height:96vh;overflow:auto}
+  #lobby .body{max-height:none}
+  #lobbyGrid{display:flex;gap:14px;flex-wrap:wrap}
+  #lobbyGrid > div{flex:1 1 300px;min-width:280px}
+  #lobbyGrid h4{margin:0 0 8px 0;color:#fd6;font-size:13px;border-bottom:1px solid #234;padding-bottom:4px}
+  #lobbyLibraryBody{max-height:520px;overflow:auto;padding-right:4px}
+  #vote{top:8px;left:50%;transform:translateX(-50%);padding:6px 10px;display:none}
+  #vote button{margin:0 4px}
+  #hub{display:none;left:0;top:0;right:0;bottom:0;width:auto;border-radius:0;border:none;border-bottom:1px solid #2af;background:rgba(4,10,18,.97);box-shadow:none}
+  #hub h3{border-radius:0;cursor:default;display:flex;align-items:center;gap:10px}
+  #hub h3 .spacer{flex:1}
+  #hub .body{max-height:none;height:calc(100vh - 38px);padding:0}
+  #hubGrid{display:flex;gap:14px;height:100%;box-sizing:border-box;padding:14px}
+  #hubGrid > div{flex:1;min-width:0;overflow:auto;-webkit-overflow-scrolling:touch}
+  #minimap{display:none;right:20px;bottom:20px;width:340px}
+  .touchOn #minimap{bottom:170px}
+  #minimap .body{padding:6px}
+  #mmcv{display:block;width:320px;height:320px;background:#001;border:1px solid #134;image-rendering:pixelated;touch-action:none}
+  #hud{position:absolute;left:8px;top:46px;color:#8ef;font-size:12px;text-shadow:0 0 4px #000;pointer-events:none;line-height:1.4}
+  #peers{position:absolute;right:8px;top:50px;color:#8ef;font-size:12px;text-shadow:0 0 4px #000;pointer-events:none;text-align:right;background:rgba(8,16,24,.7);padding:5px 9px;border-radius:4px;border:1px solid #245;line-height:1.5;min-width:120px}
+  #peers .title{color:#fd6;font-weight:bold;font-size:11px}
+  #peers .lead{color:#fd6;font-weight:bold}
+  #peers .you{color:#9df;font-weight:bold}
+  #killfeed{position:absolute;right:8px;top:200px;display:flex;flex-direction:column;align-items:flex-end;gap:3px;pointer-events:none;z-index:4;max-width:36vw}
+  #killfeed div{background:rgba(20,8,8,.78);border-left:3px solid #f55;padding:3px 8px;border-radius:3px;color:#fcc;font-size:12px;text-shadow:0 0 3px #000;animation:killFade 5s forwards}
+  #killfeed div.respawn{background:rgba(8,20,8,.78);border-left-color:#5f5;color:#cfc}
+  @keyframes killFade{0%,80%{opacity:1}100%{opacity:0}}
+  #chatlog{position:absolute;left:8px;bottom:8px;color:#9df;font-size:11px;pointer-events:none;max-width:40vw}
+  #topbar{position:absolute;left:8px;top:8px;display:flex;gap:6px;pointer-events:auto;z-index:5}
+  #topbar button{font-size:14px;padding:6px 12px;min-height:34px}
+  #roundTimer{display:none;position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(8,16,24,.86);border:1px solid #2af;padding:6px 14px;border-radius:4px;font-size:15px;font-weight:bold;color:#ffb;text-shadow:0 0 4px #000;pointer-events:none;z-index:5}
+  #roundTimer.urgent{color:#fbb;border-color:#f55;animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+  body.lowhp::before{content:'';position:fixed;inset:0;pointer-events:none;box-shadow:inset 0 0 120px 36px #f33;animation:lowhpPulse .6s infinite;z-index:3}
+  @keyframes lowhpPulse{0%,100%{opacity:.25}50%{opacity:.9}}
+  #endscreen{display:none;left:50%;top:50%;transform:translate(-50%,-50%);width:min(560px,92vw);max-height:88vh}
+  #endscreen table{width:100%;border-collapse:collapse;font-size:14px}
+  #endscreen th,#endscreen td{padding:6px 10px;text-align:left;border-bottom:1px solid #234}
+  #endscreen tr.you td{color:#fd6;font-weight:bold}
+  .grid{display:grid;gap:2px;background:#234;border:1px solid #2af}
+  .cell{background:#012;display:flex;align-items:center;justify-content:center;cursor:pointer;font-weight:bold;user-select:none;-webkit-user-select:none;touch-action:manipulation}
+  .cell.hull{background:#345}
+  .cell.armor{background:#664}
+  .cell.gun{background:#622}
+  .cell.engine{background:#262}
+  .cell.radar{background:#246}
+  .cell.scanner{background:#426}
+  .cell.repair{background:#484}
+  .cell.shield{background:#268}
+  .cell.coolant{background:#488}
+  .cell.core{background:#a82;color:#000}
+  .cell.sel{outline:2px solid #fd6;outline-offset:-2px}
+  .cell.swap{outline:2px solid #7df;outline-offset:-2px}
+  textarea{width:100%;background:#012;color:#cfe;border:1px solid #2af;font-family:inherit;font-size:11px;box-sizing:border-box}
+  .row{display:flex;gap:6px;align-items:center;margin:5px 0;flex-wrap:wrap}
+  .tag{padding:1px 5px;background:#024;border:1px solid #2af;border-radius:3px;font-size:11px}
+  .dim{opacity:.7}
+  /* touch overlays — visible only when state.touchUI is on */
+  #joystick{display:none;position:absolute;width:140px;height:140px;border-radius:50%;background:rgba(40,80,120,0.25);border:2px solid rgba(80,160,220,0.5);pointer-events:none;z-index:4}
+  #joystick .stick{position:absolute;left:50%;top:50%;width:60px;height:60px;margin:-30px 0 0 -30px;border-radius:50%;background:rgba(120,200,255,0.5);border:2px solid #7df}
+  #firebtn{display:none;position:absolute;right:28px;bottom:28px;width:120px;height:120px;border-radius:50%;background:rgba(180,40,40,0.35);border:3px solid #f88;color:#fcc;font-size:18px;font-weight:bold;display:none;align-items:center;justify-content:center;pointer-events:auto;user-select:none;-webkit-user-select:none;touch-action:none;z-index:4}
+  #firebtn.on{background:rgba(220,80,80,0.7)}
+  #boostbtn{display:none;position:absolute;right:160px;bottom:48px;width:80px;height:80px;border-radius:50%;background:rgba(200,140,40,0.35);border:3px solid #fc6;color:#fd9;font-size:13px;font-weight:bold;display:none;align-items:center;justify-content:center;pointer-events:auto;user-select:none;-webkit-user-select:none;touch-action:none;z-index:4}
+  #boostbtn.on{background:rgba(255,180,60,0.7)}
+  .touchOn #joystick{display:block}
+  .touchOn #firebtn{display:flex}
+  .touchOn #boostbtn{display:flex}
+  .touchOn #peers{top:auto;bottom:160px;right:160px}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="cv"></canvas>
+  <canvas id="fx"></canvas>
+  <div id="hud"></div>
+  <div id="peers"></div>
+  <div id="killfeed"></div>
+  <div id="chatlog"></div>
+
+  <div id="topbar">
+    <button id="dockBtn" onclick="Game.toggleHub()">⚓ Dock</button>
+    <button id="mapBtn" onclick="Game.toggleMap()">🗺 Map</button>
+    <button id="chatBtn" onclick="Game.toggleChatMenu()">💬 Chat</button>
+  </div>
+
+  <div id="chatmenu" class="panel" style="display:none;left:50%;top:54px;transform:translateX(-50%);width:min(280px,90vw)">
+    <h3>Quick Chat</h3>
+    <div class="body" id="chatmenuBody"></div>
+  </div>
+
+  <div id="joystick"><div class="stick"></div></div>
+  <div id="firebtn">FIRE</div>
+  <div id="boostbtn">BOOST</div>
+  <div id="roundTimer"></div>
+
+  <div id="endscreen" class="panel">
+    <h3>Round Over</h3>
+    <div class="body" id="endBody"></div>
+  </div>
+
+  <div id="vote" class="panel"><span id="voteText"></span>
+    <button class="good" onclick="Game.castVote(true)">Yes</button>
+    <button class="bad" onclick="Game.castVote(false)">No</button>
+  </div>
+
+  <div id="lobby" class="panel">
+    <h3>Sortie — Lobby</h3>
+    <div class="body">
+      <div id="lobbyGrid">
+        <div id="lobbyControls">
+          <h4>Game Setup</h4>
+          <div class="row">Name <input id="pname" value="" style="background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px"></div>
+          <div class="row">AI bots <input id="aicount" type="number" min="0" max="12" value="2" style="width:64px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px">
+            <span class="dim">— added to the game when you start / connect</span></div>
+          <div class="row">Round length (min) <input id="roundmin" type="number" min="0" max="60" value="10" style="width:64px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px">
+            <span class="dim">— 0 = none</span></div>
+          <div class="row">Kill goal <input id="killgoal" type="number" min="0" max="999" value="0" style="width:64px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px">
+            <span class="dim">— first to N kills (0 = none). At least one required if not race mode.</span></div>
+          <div class="row">Game mode
+            <select id="gamemode" style="background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px;font-family:inherit;font-size:13px">
+              <option value="deathmatch">Deathmatch (kills + timer)</option>
+              <option value="race">Race (checkpoints)</option>
+            </select></div>
+          <div class="row" id="raceOptsRow" style="display:none">Race opts
+            <label class="dim">checkpoints <input id="raceCheckpoints" type="number" min="3" max="12" value="6" style="width:48px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px"></label>
+            <label class="dim">laps <input id="raceLaps" type="number" min="1" max="10" value="2" style="width:48px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px"></label>
+            <label class="dim"><input id="raceCombat" type="checkbox"> combat on</label></div>
+          <div class="row">Your team
+            <select id="myteam" style="background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px;font-family:inherit;font-size:13px">
+              <option value="0">0 — neutral (free-for-all)</option>
+              <option value="1">1 — green</option>
+              <option value="2">2 — red</option>
+              <option value="3">3 — blue</option>
+              <option value="4">4 — magenta</option>
+              <option value="5">5 — orange</option>
+            </select></div>
+          <div class="row">
+            <button onclick="Game.startSolo()">Start Solo</button>
+          </div>
+          <hr>
+          <div class="row dim">LAN / Internet — WebRTC manual handshake:</div>
+          <div class="row"><button onclick="Game.makeOffer()">Create Offer</button> <button onclick="Game.acceptOffer()">Accept Pasted Offer</button> <button onclick="Game.acceptAnswer()">Accept Pasted Answer</button></div>
+          <textarea id="sdp" rows="5" placeholder="Paste offer/answer SDP here"></textarea>
+          <div class="row dim" id="lobbyStatus">Idle.</div>
+          <div class="row dim" style="font-size:11px">Desktop: <span class="tag">W/A/S/D</span> · <span class="tag">Space</span> fire · <span class="tag">Shift</span> boost · <span class="tag">T</span> dock · <span class="tag">M</span> map · <span class="tag">1-6</span> chat. Race: <span class="tag">B</span> super boost · <span class="tag">G</span> gas cloud.</div>
+        </div>
+        <div id="lobbyLibrary">
+          <h4>Design Library</h4>
+          <div id="lobbyLibraryBody"></div>
+        </div>
+        <div id="lobbyBuilder">
+          <h4>Pre-build Ship <span class="dim" style="font-size:11px;font-weight:normal">(creative mode, no cost)</span></h4>
+          <div id="lobbyBuilderBody"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="hub" class="panel">
+    <h3>
+      <span>⚓ Docked — Trade &amp; Refit (you are safe here)</span>
+      <span class="spacer"></span>
+      <button onclick="Game.toggleHub()">Undock ✕</button>
+    </h3>
+    <div class="body">
+      <div id="hubGrid">
+        <div id="tradeBody"></div>
+        <div id="builderBody"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="minimap" class="panel">
+    <h3>Map</h3>
+    <div class="body">
+      <canvas id="mmcv" width="320" height="320"></canvas>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   Drag for floating panels (without stealing keyboard focus)
+   ============================================================ */
+(function(){
+  document.querySelectorAll('.panel').forEach(p=>{
+    // hub is full-screen; lobby and endscreen are centered modals — none should be draggable
+    if(p.id==='hub' || p.id==='lobby' || p.id==='endscreen') return;
+    const h=p.querySelector('h3'); if(!h) return;
+    let dx=0,dy=0,pid=null;
+    h.addEventListener('pointerdown',e=>{
+      if(e.target.tagName==='BUTTON') return;
+      pid=e.pointerId;
+      const r=p.getBoundingClientRect();
+      dx=e.clientX-r.left; dy=e.clientY-r.top;
+      p.style.transform=''; p.style.left=r.left+'px'; p.style.top=r.top+'px';
+      p.style.right='auto'; p.style.bottom='auto';
+      try{ h.setPointerCapture(pid); }catch(_){}
+      e.preventDefault();
+    });
+    h.addEventListener('pointermove',e=>{
+      if(e.pointerId!==pid) return;
+      p.style.left=(e.clientX-dx)+'px';
+      p.style.top=(e.clientY-dy)+'px';
+    });
+    function end(e){ if(e.pointerId===pid){ try{ h.releasePointerCapture(pid); }catch(_){} pid=null; } }
+    h.addEventListener('pointerup',end);
+    h.addEventListener('pointercancel',end);
+  });
+  // Keep canvas focused so keys flow there
+  window.addEventListener('pointerdown',e=>{ if(e.target.tagName!=='INPUT'&&e.target.tagName!=='TEXTAREA'&&e.target.tagName!=='BUTTON') document.activeElement&&document.activeElement.blur&&document.activeElement.blur(); });
+})();
+
+/* ============================================================
+   WebGL2 renderer (instanced) for ships, asteroids, bullets, platforms
+   ============================================================ */
+const Renderer=(()=>{
+  const cv=document.getElementById('cv');
+  const gl=cv.getContext('webgl2',{antialias:true,alpha:false});
+  if(!gl){ alert('WebGL2 required'); throw new Error('no webgl2'); }
+
+  function resize(){
+    const dpr=Math.min(window.devicePixelRatio||1,2);
+    cv.width=Math.floor(innerWidth*dpr);
+    cv.height=Math.floor(innerHeight*dpr);
+    gl.viewport(0,0,cv.width,cv.height);
+  }
+  resize(); window.addEventListener('resize',resize);
+
+  const vs=`#version 300 es
+  precision highp float;
+  layout(location=0) in vec2 aPos;       // unit shape vertex
+  layout(location=1) in vec4 iXYZRot;    // x,y,scale,rot
+  layout(location=2) in vec4 iColor;     // rgba
+  uniform vec2 uCam;
+  uniform vec2 uViewport; // pixels
+  uniform float uZoom;
+  out vec4 vColor;
+  void main(){
+    float c=cos(iXYZRot.w), s=sin(iXYZRot.w);
+    vec2 p=vec2(aPos.x*c-aPos.y*s, aPos.x*s+aPos.y*c)*iXYZRot.z;
+    p+=iXYZRot.xy - uCam;
+    vec2 clip=(p*uZoom/uViewport)*2.0;
+    gl_Position=vec4(clip,0.0,1.0);
+    vColor=iColor;
+  }`;
+  const fs=`#version 300 es
+  precision highp float;
+  in vec4 vColor; out vec4 outColor;
+  void main(){ outColor=vColor; }`;
+
+  function sh(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(o));return o;}
+  const prog=gl.createProgram();
+  gl.attachShader(prog,sh(gl.VERTEX_SHADER,vs));
+  gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+
+  const uCam=gl.getUniformLocation(prog,'uCam');
+  const uVP=gl.getUniformLocation(prog,'uViewport');
+  const uZoom=gl.getUniformLocation(prog,'uZoom');
+
+  // Shape geometry generators (line-loop polygons rendered as TRIANGLE_FAN outline via TRIANGLES is heavier; use LINES via TRIANGLE_STRIP is awkward. We use TRIANGLES with thin outline via two scales)
+  // Simpler: use LINE_LOOP per-instance via draw arrays instanced — but LINE_LOOP doesn't instance well. We'll use TRIANGLE_FAN filled shapes.
+
+  function buildShape(verts){
+    // verts: array of [x,y] for outline. We render as triangle fan with center at 0.
+    const arr=[0,0];
+    for(const v of verts) arr.push(v[0],v[1]);
+    arr.push(verts[0][0],verts[0][1]);
+    return new Float32Array(arr);
+  }
+
+  // Asteroid: 8-sided lumpy circle
+  function asteroidGeo(){
+    const v=[];
+    for(let i=0;i<10;i++){
+      const a=i/10*Math.PI*2;
+      const r=0.85+0.3*Math.sin(i*1.7);
+      v.push([Math.cos(a)*r,Math.sin(a)*r]);
+    }
+    return buildShape(v);
+  }
+  // Ship: triangle
+  function shipGeo(){ return buildShape([[1,0],[-0.7,0.6],[-0.4,0],[-0.7,-0.6]]); }
+  // Bullet: small diamond
+  function bulletGeo(){ return buildShape([[1,0],[0,0.5],[-1,0],[0,-0.5]]); }
+  // Platform: octagon
+  function platformGeo(){
+    const v=[];
+    for(let i=0;i<8;i++){const a=i/8*Math.PI*2;v.push([Math.cos(a),Math.sin(a)]);}
+    return buildShape(v);
+  }
+
+  function makeShape(geoArr){
+    const vao=gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const vb=gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER,vb);
+    gl.bufferData(gl.ARRAY_BUFFER,geoArr,gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+    // instance buffer
+    const ib=gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER,ib);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1,4,gl.FLOAT,false,32,0);
+    gl.vertexAttribDivisor(1,1);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2,4,gl.FLOAT,false,32,16);
+    gl.vertexAttribDivisor(2,1);
+    gl.bindVertexArray(null);
+    return {vao,ib,count:geoArr.length/2};
+  }
+
+  const shapes={
+    asteroid:makeShape(asteroidGeo()),
+    ship:makeShape(shipGeo()),
+    bullet:makeShape(bulletGeo()),
+    platform:makeShape(platformGeo()),
+  };
+
+  function drawInstanced(shape,instData){
+    if(instData.length===0) return;
+    gl.bindVertexArray(shape.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER,shape.ib);
+    gl.bufferData(gl.ARRAY_BUFFER,instData,gl.DYNAMIC_DRAW);
+    gl.drawArraysInstanced(gl.TRIANGLE_FAN,0,shape.count,instData.length/8);
+    gl.bindVertexArray(null);
+  }
+
+  let cam={x:0,y:0,zoom:1};
+
+  function frame(scene){
+    gl.clearColor(0,0,0.02,1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(prog);
+    gl.uniform2f(uCam,cam.x,cam.y);
+    gl.uniform2f(uVP,cv.width,cv.height);
+    gl.uniform1f(uZoom,cam.zoom*(window.devicePixelRatio||1));
+
+    // stars (cheap: dots via tiny bullets)
+    drawInstanced(shapes.bullet,scene.stars);
+    drawInstanced(shapes.platform,scene.platforms);
+    drawInstanced(shapes.asteroid,scene.asteroids);
+    drawInstanced(shapes.ship,scene.ships);
+    drawInstanced(shapes.bullet,scene.bullets);
+  }
+
+  return {frame,setCam:(x,y,z)=>{cam.x=x;cam.y=y;cam.zoom=z||1;},cv,gl};
+})();
+
+/* ============================================================
+   Sound (synthesized WebAudio SFX)
+   ============================================================ */
+const Sound=(()=>{
+  let ctx=null;
+  function ensure(){
+    if(!ctx){ try{ ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch(_){ return; } }
+    if(ctx.state==='suspended') ctx.resume();
+  }
+  // Safari requires the AudioContext to be created in a user gesture handler
+  ['pointerdown','keydown','touchstart'].forEach(ev=>document.addEventListener(ev,ensure,{passive:true}));
+  function tone(f0,dur,type,gain,f1){
+    if(!ctx) return;
+    const t=ctx.currentTime;
+    const o=ctx.createOscillator(), g=ctx.createGain();
+    o.type=type||'square';
+    o.frequency.setValueAtTime(f0,t);
+    if(f1) o.frequency.exponentialRampToValueAtTime(Math.max(20,f1),t+dur);
+    g.gain.setValueAtTime(gain||0.08,t);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(t); o.stop(t+dur);
+  }
+  function noiseBurst(dur,gain,lpStart,lpEnd){
+    if(!ctx) return;
+    const t=ctx.currentTime;
+    const len=Math.max(1,Math.floor(ctx.sampleRate*dur));
+    const buf=ctx.createBuffer(1,len,ctx.sampleRate);
+    const d=buf.getChannelData(0);
+    for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*(1-i/len);
+    const s=ctx.createBufferSource(); s.buffer=buf;
+    const f=ctx.createBiquadFilter(); f.type='lowpass';
+    f.frequency.setValueAtTime(lpStart||3000,t);
+    f.frequency.exponentialRampToValueAtTime(Math.max(60,lpEnd||300),t+dur);
+    const g=ctx.createGain(); g.gain.value=gain||0.18;
+    s.connect(f); f.connect(g); g.connect(ctx.destination);
+    s.start(t);
+  }
+  // Looping engine: low sawtooth + bandpassed noise rumble. Gain/pitch driven by setEngine().
+  let engGain=null, engOsc=null, engNoiseSrc=null, engFilter=null;
+  function ensureEngine(){
+    if(!ctx || engGain) return;
+    engGain=ctx.createGain(); engGain.gain.value=0; engGain.connect(ctx.destination);
+    engOsc=ctx.createOscillator(); engOsc.type='sawtooth'; engOsc.frequency.value=70;
+    engOsc.connect(engGain);
+    const len=Math.floor(ctx.sampleRate*2);
+    const buf=ctx.createBuffer(1,len,ctx.sampleRate);
+    const data=buf.getChannelData(0);
+    for(let i=0;i<len;i++) data[i]=Math.random()*2-1;
+    engNoiseSrc=ctx.createBufferSource(); engNoiseSrc.buffer=buf; engNoiseSrc.loop=true;
+    engFilter=ctx.createBiquadFilter(); engFilter.type='bandpass';
+    engFilter.frequency.value=140; engFilter.Q.value=0.7;
+    engNoiseSrc.connect(engFilter).connect(engGain);
+    engOsc.start(); engNoiseSrc.start();
+  }
+  return {
+    fire(){ tone(680,0.05,'square',0.04,260); },
+    fireLaser(){ tone(1100,0.08,'sawtooth',0.04,420); },
+    hit(){ tone(180,0.09,'sine',0.10,80); },
+    explosion(){ noiseBurst(0.55,0.22,4200,180); tone(110,0.4,'sine',0.05,40); },
+    dock(){ tone(440,0.07,'sine',0.05); setTimeout(()=>tone(660,0.13,'sine',0.05),85); },
+    setEngine(active, intensity, boosting){
+      ensureEngine(); if(!ctx || !engGain) return;
+      const t=ctx.currentTime;
+      const targetGain = active ? (boosting?0.07:0.045)*Math.max(0.3, Math.min(1.5, intensity||1)) : 0;
+      const targetFreq = boosting ? 130 : (active?70:50);
+      engGain.gain.cancelScheduledValues(t);
+      engGain.gain.linearRampToValueAtTime(targetGain, t+0.02);
+      engOsc.frequency.cancelScheduledValues(t);
+      engOsc.frequency.linearRampToValueAtTime(targetFreq, t+0.05);
+    },
+  };
+})();
+
+/* ============================================================
+   Music (generative ambient: chill chimes, intensity-aware)
+   ============================================================ */
+const Music=(()=>{
+  // C minor pentatonic across two octaves — always sounds OK randomized
+  const SCALE=[261.63, 311.13, 349.23, 391.99, 466.16, 523.25, 622.25, 698.46];
+  const BASS_ROOT=65.41; // C2
+  let ctx=null, master=null, pad=null;
+  let scheduled=false;
+  let intensity=0, target=0;
+  let beat=0;
+
+  function ensure(){
+    if(ctx) return;
+    try{ ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch(_){ return; }
+    master=ctx.createGain(); master.gain.value=0.16; master.connect(ctx.destination);
+    // sustained sub-pad — two detuned sines at root
+    pad=ctx.createGain(); pad.gain.value=0; pad.connect(master);
+    for(const detune of [-7, 0, 7]){
+      const o=ctx.createOscillator(); o.type='sine'; o.frequency.value=BASS_ROOT*2;
+      o.detune.value=detune;
+      const g=ctx.createGain(); g.gain.value=0.5;
+      o.connect(g); g.connect(pad);
+      o.start();
+    }
+  }
+  function envNote(freq, t, dur, gain, type){
+    if(!ctx) return;
+    const o=ctx.createOscillator(); o.type=type||'sine'; o.frequency.value=freq;
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(gain, t+0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t+dur);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t+dur+0.05);
+  }
+  function chime(t, freq){
+    envNote(freq, t, 1.8, 0.10, 'sine');
+    envNote(freq*1.5, t, 0.7, 0.025, 'sine'); // soft fifth shimmer
+  }
+  function bass(t, freq){
+    envNote(freq, t, 1.0, 0.09, 'triangle');
+  }
+  function blip(t, freq){
+    envNote(freq, t, 0.18, 0.07, 'triangle');
+  }
+  function tick(){
+    if(!ctx){ scheduled=false; return; }
+    const now=ctx.currentTime;
+    const interval = 1.4 - intensity*1.05; // 1.4s chill → 0.35s frantic
+    const noteIdx = Math.floor(Math.random()*(intensity<0.5?5:SCALE.length));
+    const f=SCALE[noteIdx];
+
+    if(beat%4===0){
+      chime(now, f);
+      if(intensity>0.35){ bass(now, BASS_ROOT*(intensity>0.7?2:1)); }
+    } else if(beat%2===0){
+      if(intensity>0.25) chime(now, f);
+    } else {
+      if(intensity>0.55) blip(now, f*2);
+    }
+    if(intensity>0.6 && Math.random()<0.3) blip(now+interval*0.5, SCALE[(noteIdx+2)%SCALE.length]*2);
+    beat++;
+
+    intensity += (target - intensity)*0.08;
+    // pad volume follows intensity
+    if(pad){ pad.gain.cancelScheduledValues(now); pad.gain.linearRampToValueAtTime(0.03 + intensity*0.10, now+0.3); }
+
+    setTimeout(tick, interval*1000);
+  }
+  function start(){
+    ensure();
+    if(ctx && ctx.state==='suspended') ctx.resume();
+    if(!scheduled){ scheduled=true; setTimeout(tick, 200); }
+  }
+  ['pointerdown','keydown','touchstart'].forEach(ev=>document.addEventListener(ev, start, {once:true, passive:true}));
+  return {
+    start,
+    setIntensity(v){ target=Math.max(0, Math.min(1, v)); },
+    stop(){ if(pad) pad.gain.value=0; target=0; }
+  };
+})();
+
+/* ============================================================
+   Game state
+   ============================================================ */
+const WORLD=16000;
+const MAP_CELL=400;
+const PLATFORM_DEFENSE=240;
+// Seeded mulberry32 PRNG — lets every peer reproduce the same world generation.
+function makeRng(seed){
+  let s=(seed>>>0)||1;
+  return function(){
+    s=(s+0x6D2B79F5)>>>0;
+    let t=s;
+    t=Math.imul(t^(t>>>15), t|1);
+    t^=t+Math.imul(t^(t>>>7), t|61);
+    return ((t^(t>>>14))>>>0)/4294967296;
+  };
+}
+const Game=(()=>{
+  const state={
+    mode:'lobby', // lobby|playing
+    me:{id:rid(),name:'',team:0,score:0,creds:50,materials:{iron:0,silicon:0,carbon:0,rare:0}},
+    players:{}, // id->player
+    asteroids:[],
+    bullets:[],
+    platforms:[],
+    stars:[],
+    nebulae:[],
+    gravWells:[],
+    worldSeed:0, // 0 = not yet seeded
+    gameMode:'deathmatch',  // 'deathmatch' | 'race'
+    raceCombat:false,       // race-mode toggle: bullets damage other players?
+    raceCheckpoints:[],     // [{x,y,r}] route in order
+    raceLaps:1,             // number of laps to win
+    raceFirstFinishTick:0,  // tick when first racer crossed final checkpoint of final lap
+    raceFinishOrder:[],     // [pid,...] in order of finish
+    raceGracePeriod:1800,   // 30s after first finish
+    raceCountdown:0,        // ticks remaining; -1 = waiting on peers; >0 = counting down; 0 = racing
+    racePeersReady:new Set(),
+    pingTo:{},        // playerId → last measured RTT in ms
+    raceExpectedReadies:0,
+    raceWaitStartTick:0,
+    keys:{},
+    nearPlatform:null,
+    docked:false,
+    showMap:false,
+    explored:new Set(),
+    aiIds:[],
+    pirateIds:[],     // hostile NPCs in state.players
+    traderIds:[],     // peaceful NPCs in state.players
+    piratesKilled:0,  // increments on each pirate death (king summon trigger)
+    kingActive:false, // a Pirate King is currently in the world
+    pickups:[],       // [{x,y,vx,vy,rot,type,life}] floating module pickups
+    pings:[],         // [{x,y,team,life}] map pings
+    npcSpawnCd:600,   // ticks until next NPC spawn attempt
+    dockedTrader:null,// {id} while velocity-matched with a trader
+    shipLibrary:[],
+    lobby:{layout:null,placeMode:null,selectedCell:null,gunPopover:null},
+    hits:[],       // [{angle, life}] — directional incoming-fire arcs (life in ticks)
+    particles:[],  // [{x,y,vx,vy,life,maxLife,r,g,b,size}] — explosion debris
+    roundEndTick:0, // 0 = unlimited; else target state.tick value
+    killGoal:0,     // 0 = unlimited; first to N kills ends the round
+    roundEnded:false,
+    touchUI:('ontouchstart' in window) || (window.matchMedia && window.matchMedia('(pointer:coarse)').matches),
+    joy:{active:false,pid:null,sx:0,sy:0,x:0,y:0},
+    fireHeld:false,
+    boostHeld:false,
+    selectedCell:null, // {x,y} for tap-to-swap
+    gunPopover:null,   // {x,y} for gun config popover
+    pendingVote:null, // {voterIds:Set, voted:Map(id->bool), candidate:{id,name}}
+    tick:0,
+    lastT:performance.now(),
+  };
+
+  function rid(){return Math.random().toString(36).slice(2,9);}
+
+  function makeShipLayout(){
+    // 9x9 grid, center 'core' + initial hull and one forward gun
+    const g=[];
+    for(let y=0;y<9;y++){const r=[];for(let x=0;x<9;x++) r.push(null); g.push(r);}
+    g[4][4]={type:'core'};
+    g[4][3]={type:'hull'};
+    g[4][5]={type:'hull'};
+    g[3][4]={type:'hull'};
+    g[5][4]={type:'hull'};
+    g[4][6]={type:'gun',variant:'basic',aim:0,auto:false,multi:1};
+    g[4][2]={type:'engine'};
+    return g;
+  }
+
+  // mass per cell type — engines produce fixed force/torque, divided by mass
+  const CELL_MASS={core:5,hull:1,armor:3,engine:1,repair:1,scanner:1,radar:1,shield:2,coolant:1};
+  const GUN_MASS={basic:2,laser:2,heavy:4};
+  const ENGINE_FORCE=2.0;
+  const ENGINE_TORQUE=1.0;
+  // unique sidegrade modules dropped/sold by NPCs
+  const UNIQUE_ITEMS={
+    ion_engine:{name:'Ion Engine',baseType:'engine',desc:'1.5× force, 3× mass'},
+    heavy_armor:{name:'Heavy Armor',baseType:'armor',desc:'+25 HP, mass 6'},
+    quad_gun:{name:'Quad Gun',baseType:'gun',variant:'basic',desc:'always 4-shot multi'},
+    long_radar:{name:'Long-range Radar',baseType:'radar',desc:'+3500u range vs +1500u'},
+    plasma_gun:{name:'Plasma Gun',baseType:'gun',variant:'plasma',desc:'12 dmg, slow CD'},
+  };
+  // Consumable race items — used during the race, not installed in the ship
+  const RACE_CONSUMABLES={
+    super_boost:{name:'Super Boost', desc:'Boost pool refills + doubles cap for 15 s'},
+    gas_cloud:{name:'Gas Cloud', desc:'Drop a 600u nebula behind you for 30 s'},
+  };
+  function shipStats(p){
+    let maxHp=0,mass=0,engineForce=0,engineTorque=0,engines=0,boostCap=0,guns=[],repair=0,scanner=0,radar=0,radarRange=0,shieldMax=0,coolant=0;
+    for(let y=0;y<9;y++)for(let x=0;x<9;x++){
+      const c=p.layout[y][x]; if(!c) continue;
+      const uniq=c.unique;
+      if(c.type==='core'){ maxHp+=20; mass+=CELL_MASS.core; }
+      else if(c.type==='hull'){ maxHp+=5; mass+=CELL_MASS.hull; }
+      else if(c.type==='armor'){
+        if(uniq==='heavy_armor'){ maxHp+=25; mass+=6; }
+        else { maxHp+=15; mass+=CELL_MASS.armor; }
+      }
+      else if(c.type==='engine'){
+        engines++;
+        if(uniq==='ion_engine'){ engineForce+=3.0; engineTorque+=1.5; mass+=3; boostCap+=60; }
+        else { engineForce+=ENGINE_FORCE; engineTorque+=ENGINE_TORQUE; mass+=CELL_MASS.engine; boostCap+=40; }
+      }
+      else if(c.type==='shield'){ shieldMax+=25; mass+=CELL_MASS.shield; }
+      else if(c.type==='coolant'){ coolant+=1; mass+=CELL_MASS.coolant; }
+      else if(c.type==='repair'){ repair+=1; mass+=CELL_MASS.repair; }
+      else if(c.type==='scanner'){ scanner+=1; mass+=CELL_MASS.scanner; }
+      else if(c.type==='radar'){
+        radar+=1; mass+=CELL_MASS.radar;
+        radarRange += (uniq==='long_radar')?3500:1500;
+      }
+      else if(c.type==='gun'){
+        const v=c.variant||'basic';
+        mass+=GUN_MASS[v]||2;
+        let multi=c.multi||1;
+        if(uniq==='quad_gun') multi=4;
+        guns.push({x:x-4,y:4-y,aim:c.aim||0,variant:v,auto:!!c.auto,multi,unique:uniq||null});
+      }
+    }
+    const thrust = mass>0?engineForce/mass:0;
+    const turn   = mass>0?engineTorque/mass:0;
+    // heat derivations: each coolant +40 max capacity, +0.5/tick cooling, -15% heat per shot (compound)
+    const maxHeat   = 100 + coolant*40;
+    const heatDecay = 0.5 + coolant*0.5;
+    const heatMult  = Math.pow(0.85, coolant);
+    return {maxHp,mass,engines,thrust,turn,guns,repair,scanner,radar,radarRange,shieldMax,boostCap,coolant,maxHeat,heatDecay,heatMult};
+  }
+
+  function spawnPlayer(id,name,team){
+    const layout=makeShipLayout();
+    const p={id,name:name||'P-'+id.slice(0,3),team:team||0,x:(Math.random()-0.5)*1000,y:(Math.random()-0.5)*1000,vx:0,vy:0,rot:0,
+      layout,hp:0,maxHp:0,fireCd:0,heat:0,
+      shield:0,shieldMax:0,shieldCd:0,
+      boost:0,boostMax:0,boosting:false,
+      kills:0,deaths:0,creds:50,materials:{iron:0,silicon:0,carbon:0,rare:0},alive:true,respawn:0};
+    const s=shipStats(p); p.maxHp=s.maxHp; p.hp=s.maxHp; p.shieldMax=s.shieldMax; p.shield=s.shieldMax; p.boostMax=s.boostCap; p.boost=s.boostCap;
+    return p;
+  }
+
+  function genWorld(seed){
+    if(seed) state.worldSeed=seed>>>0;
+    if(!state.worldSeed) state.worldSeed=(Math.floor(Math.random()*0xFFFFFFFF))>>>0 || 1;
+    const rng=makeRng(state.worldSeed);
+    state.platforms=[];
+    for(let i=0;i<24;i++){
+      const a=rng()*Math.PI*2;
+      const r=rng()*WORLD*0.85+400;
+      state.platforms.push({id:rid(),x:Math.cos(a)*r,y:Math.sin(a)*r,r:60});
+    }
+    state.asteroids=[];
+    for(let i=0;i<800;i++){
+      const a=spawnAsteroid(undefined,rng);
+      let bad=false;
+      for(const pl of state.platforms){ if(Math.hypot(a.x-pl.x,a.y-pl.y)<pl.r+PLATFORM_DEFENSE+a.r){ bad=true; break; } }
+      if(!bad) state.asteroids.push(a);
+    }
+    state.stars=[];
+    for(let i=0;i<1400;i++){
+      state.stars.push({x:(rng()-0.5)*WORLD*2,y:(rng()-0.5)*WORLD*2,r:1+rng()*1.5});
+    }
+    state.nebulae=[];
+    for(let i=0;i<12;i++){
+      const a=rng()*Math.PI*2;
+      const r=rng()*WORLD*0.85;
+      const radioactive = rng()<0.30; // ~30% are radioactive
+      state.nebulae.push({
+        x:Math.cos(a)*r, y:Math.sin(a)*r,
+        r:600+rng()*900,
+        seed:rng()*1000,
+        radioactive
+      });
+    }
+    state.gravWells=[];
+    const wellCount=3+Math.floor(rng()*3);
+    for(let i=0;i<wellCount;i++){
+      const a=rng()*Math.PI*2;
+      const r=800+rng()*WORLD*0.7;
+      let x=Math.cos(a)*r, y=Math.sin(a)*r;
+      let safe=true;
+      for(const pl of state.platforms){ if(Math.hypot(x-pl.x,y-pl.y)<pl.r+PLATFORM_DEFENSE+1200){ safe=false; break; } }
+      if(!safe){ i--; continue; }
+      state.gravWells.push({ x, y, strength:1500+rng()*1500 });
+    }
+    // race checkpoints — generated from same seed so peers agree on route
+    state.raceCheckpoints=[];
+    const nCp = Math.max(3, Math.min(12, state.raceCheckpoints?.length || 6));
+    const targetCount = 12; // always pre-generate 12; gameplay uses raceCheckpoints from lobby up to this many
+    const minSeparation = 2200;
+    let attempts=0;
+    while(state.raceCheckpoints.length<targetCount && attempts<400){
+      attempts++;
+      const a=rng()*Math.PI*2;
+      const r=800+rng()*WORLD*0.85;
+      const x=Math.cos(a)*r, y=Math.sin(a)*r;
+      // not inside a well or hub defense
+      let bad=false;
+      for(const w of state.gravWells){ if(Math.hypot(x-w.x,y-w.y)<800){ bad=true; break; } }
+      if(!bad) for(const pl of state.platforms){ if(Math.hypot(x-pl.x,y-pl.y)<pl.r+PLATFORM_DEFENSE+200){ bad=true; break; } }
+      if(!bad) for(const cp of state.raceCheckpoints){ if(Math.hypot(x-cp.x,y-cp.y)<minSeparation){ bad=true; break; } }
+      if(bad) continue;
+      state.raceCheckpoints.push({x, y, r:140});
+    }
+  }
+  function inNebula(x,y){
+    for(const n of state.nebulae){
+      const dx=x-n.x, dy=y-n.y;
+      if(dx*dx+dy*dy<n.r*n.r) return true;
+    }
+    return false;
+  }
+  function inRadioactiveNebula(x,y){
+    for(const n of state.nebulae){
+      if(!n.radioactive) continue;
+      const dx=x-n.x, dy=y-n.y;
+      if(dx*dx+dy*dy<n.r*n.r) return true;
+    }
+    return false;
+  }
+
+  function spawnAsteroid(opt,rngFn){
+    const rng=rngFn||Math.random;
+    const size=opt?.size!==undefined?opt.size:(60+rng()*40);
+    const a=rng()*Math.PI*2;
+    return {
+      id:rid(),
+      x:opt?.x!==undefined?opt.x:(rng()-0.5)*WORLD*1.6,
+      y:opt?.y!==undefined?opt.y:(rng()-0.5)*WORLD*1.6,
+      vx:opt?.vx!==undefined?opt.vx:Math.cos(a)*(10+rng()*30)/60,
+      vy:opt?.vy!==undefined?opt.vy:Math.sin(a)*(10+rng()*30)/60,
+      rot:rng()*Math.PI*2,
+      vrot:(rng()-0.5)*0.02,
+      r:size,
+      hp:Math.max(1,Math.floor(size/8)),
+      mat:['iron','silicon','carbon','rare'][Math.floor(rng()*4)]
+    };
+  }
+
+  /* -------- Input -------- */
+  window.addEventListener('keydown',e=>{
+    if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
+    state.keys[e.code]=true;
+    if(e.code==='KeyT'){ toggleHub(); }
+    if(e.code==='KeyM'){ toggleMap(); }
+    if(e.code==='KeyB' && state.gameMode==='race'){ useConsumable('super_boost'); }
+    if(e.code==='KeyG' && state.gameMode==='race'){ useConsumable('gas_cloud'); }
+    if(e.code==='Space') e.preventDefault();
+  });
+  window.addEventListener('keyup',e=>{ state.keys[e.code]=false; });
+
+  function useConsumable(key){
+    const me=state.players[state.me.id]; if(!me || !me.alive) return;
+    const inv=me.inventory||{}; if(!inv[key]) return;
+    if(key==='super_boost'){
+      me.boostMax = (me.boostMax||0)*2 + 50; // buff capacity for the duration
+      me.boost = me.boostMax;
+      me._boostBoostUntil = state.tick + 15*60;
+      chatLine('⚡ super boost active');
+    } else if(key==='gas_cloud'){
+      // drop a temporary nebula behind ship
+      const back=8;
+      const cx = me.x - Math.cos(me.rot)*back;
+      const cy = me.y - Math.sin(me.rot)*back;
+      state.nebulae.push({x:cx, y:cy, r:600, seed:Math.random()*1000, radioactive:false, life:30*60});
+      chatLine('💨 gas cloud dropped');
+    }
+    inv[key]--;
+    if(inv[key]<=0) delete inv[key];
+  }
+  function toggleHub(){
+    if(!state.docked){
+      if(!state.nearPlatform){ chatLine('not near a hub'); return; }
+      state.docked=true;
+      const me=state.players[state.me.id];
+      if(me && state.nearPlatform){
+        me.x=state.nearPlatform.x; me.y=state.nearPlatform.y;
+        me.vx=state.nearPlatform.vx||0; me.vy=state.nearPlatform.vy||0;
+      }
+      renderHub();
+      document.getElementById('hub').style.display='block';
+      document.getElementById('dockBtn').classList.add('active');
+      document.getElementById('topbar').style.display='none';
+      document.getElementById('minimap').style.display='none';
+      document.getElementById('hud').style.display='none';
+      document.getElementById('peers').style.display='none';
+      Sound.dock();
+    } else {
+      // capture any design changes made while docked
+      snapshotMyLayout();
+      state.docked=false;
+      state.selectedCell=null; state.gunPopover=null;
+      document.getElementById('hub').style.display='none';
+      document.getElementById('dockBtn').classList.remove('active');
+      document.getElementById('topbar').style.display='';
+      document.getElementById('hud').style.display='';
+      document.getElementById('peers').style.display='';
+      if(state.showMap) document.getElementById('minimap').style.display='block';
+    }
+  }
+  function toggleMap(){
+    state.showMap=!state.showMap;
+    document.getElementById('minimap').style.display=state.showMap?'block':'none';
+    document.getElementById('mapBtn').classList.toggle('active',state.showMap);
+    if(state.showMap) renderMinimap();
+  }
+
+  /* -------- Networking (WebRTC mesh) -------- */
+  const Net={
+    peers:{}, // id->{pc,dc,name}
+    onMsg:(from,m)=>handleNetMsg(from,m),
+    broadcast(m){
+      const s=JSON.stringify({from:state.me.id,...m});
+      for(const id in this.peers){
+        const dc=this.peers[id].dc;
+        if(dc&&dc.readyState==='open') try{dc.send(s);}catch(_){}
+      }
+    },
+    broadcastAs(asId,m){
+      const s=JSON.stringify({from:asId,...m});
+      for(const id in this.peers){
+        const dc=this.peers[id].dc;
+        if(dc&&dc.readyState==='open') try{dc.send(s);}catch(_){}
+      }
+    },
+    sendTo(id,m){
+      const s=JSON.stringify({from:state.me.id,...m});
+      const pe=this.peers[id]; if(pe&&pe.dc&&pe.dc.readyState==='open') try{pe.dc.send(s);}catch(_){}
+    },
+  };
+
+  function handleNetMsg(from,m){
+    if(m.kind==='state'){
+      const p=state.players[from];
+      if(p){
+        p.x=m.x; p.y=m.y; p.vx=m.vx; p.vy=m.vy; p.rot=m.rot; p.hp=m.hp; p.maxHp=m.maxHp; p.team=m.team; p.alive=m.alive; p.docked=!!m.docked;
+        p.grace=m.grace?1:0;
+        p.thrusting=!!m.thrusting;
+        p.pirate=!!m.pirate;
+        p.trader=!!m.trader;
+        p.king=!!m.king;
+        if(m.checkpoint!==undefined) p.checkpoint=m.checkpoint;
+        if(m.lap!==undefined) p.lap=m.lap;
+      } else {
+        state.players[from]={id:from,name:m.name||'P-'+from.slice(0,3),team:m.team||0,x:m.x,y:m.y,vx:m.vx,vy:m.vy,rot:m.rot,hp:m.hp,maxHp:m.maxHp,layout:null,alive:m.alive,docked:!!m.docked,grace:m.grace?1:0,pirate:!!m.pirate,trader:!!m.trader,king:!!m.king,materials:{iron:0,silicon:0,carbon:0,rare:0},creds:0};
+      }
+    } else if(m.kind==='bullet'){
+      state.bullets.push({x:m.x,y:m.y,vx:m.vx,vy:m.vy,t:120,owner:from,dmg:m.dmg||3,r:3});
+    } else if(m.kind==='ast_hit'){
+      const a=state.asteroids.find(a=>a.id===m.id);
+      if(a){ a.hp-=m.dmg; if(a.hp<=0) breakAsteroid(a); }
+    } else if(m.kind==='ast_sync'){
+      // host-style asteroid spawn broadcast (any peer can do this)
+      if(!state.asteroids.find(a=>a.id===m.a.id)) state.asteroids.push(m.a);
+    } else if(m.kind==='chat'){
+      chatLine((state.players[from]?.name||from)+': '+m.text);
+    } else if(m.kind==='join_req'){
+      askVote(from,m.name);
+    } else if(m.kind==='join_vote'){
+      handleVoteCast({candidate:m.candidate,voter:from,yes:m.yes});
+    } else if(m.kind==='team'){
+      const p=state.players[from]; if(p) p.team=m.team;
+    } else if(m.kind==='rtt_ping'){
+      Net.broadcast({kind:'rtt_pong', t:m.t, target:from});
+    } else if(m.kind==='rtt_pong'){
+      if(m.target===state.me.id){
+        const rtt = Math.round(performance.now() - m.t);
+        state.pingTo[from] = rtt;
+      }
+    } else if(m.kind==='race_ready'){
+      state.racePeersReady.add(from);
+    } else if(m.kind==='npc_despawn'){
+      delete state.players[m.npcId];
+    } else if(m.kind==='world_seed'){
+      if(m.seed && m.seed!==state.worldSeed){
+        chatLine('* syncing world with peer (seed '+m.seed+')');
+        genWorld(m.seed>>>0);
+      }
+    } else if(m.kind==='ping'){
+      state.pings.push({x:m.x, y:m.y, team:m.team||0, life:300});
+      while(state.pings.length>20) state.pings.shift();
+    } else if(m.kind==='design'){
+      if(m.design && m.design.hash && !state.shipLibrary.some(d=>d.hash===m.design.hash)){
+        state.shipLibrary.push(m.design);
+        while(state.shipLibrary.length>40) state.shipLibrary.shift();
+        saveLibrary();
+        if(state.docked) renderHub();
+      }
+    } else if(m.kind==='library'){
+      if(Array.isArray(m.designs)){
+        let added=0;
+        for(const d of m.designs){
+          if(d && d.hash && !state.shipLibrary.some(x=>x.hash===d.hash)){
+            state.shipLibrary.push(d); added++;
+          }
+        }
+        while(state.shipLibrary.length>40) state.shipLibrary.shift();
+        if(added){ saveLibrary(); if(state.docked) renderHub(); }
+      }
+    }
+  }
+
+  /* -------- Voting -------- */
+  function askVote(candidateId,candidateName){
+    if(state.pendingVote && state.pendingVote.candidate.id===candidateId) return;
+    state.pendingVote={candidate:{id:candidateId,name:candidateName||'P-'+candidateId.slice(0,3)},voted:new Map(),deadline:performance.now()+15000};
+    const v=document.getElementById('vote');
+    document.getElementById('voteText').textContent='Allow "'+state.pendingVote.candidate.name+'" to join?';
+    v.style.display='block';
+  }
+  function castVote(yes){
+    if(!state.pendingVote) return;
+    state.pendingVote.voted.set(state.me.id,yes);
+    Net.broadcast({kind:'join_vote',candidate:state.pendingVote.candidate.id,yes});
+    evaluateVote();
+  }
+  function handleVoteCast(p){
+    if(!state.pendingVote || state.pendingVote.candidate.id!==p.candidate) return;
+    state.pendingVote.voted.set(p.voter,p.yes);
+    evaluateVote();
+  }
+  function evaluateVote(){
+    if(!state.pendingVote) return;
+    const totalActivePlayers=Object.keys(state.players).length+1; // self
+    const needed=totalActivePlayers; // unanimous yes from current players
+    let yes=0,no=0;
+    state.pendingVote.voted.forEach(v=>{ if(v) yes++; else no++; });
+    if(no>0){
+      // reject
+      document.getElementById('vote').style.display='none';
+      state.pendingVote=null;
+    } else if(yes>=needed){
+      const cid=state.pendingVote.candidate.id;
+      const cname=state.pendingVote.candidate.name;
+      if(!state.players[cid]) state.players[cid]=spawnPlayer(cid,cname,0);
+      Net.broadcast({kind:'admit',target:cid});
+      document.getElementById('vote').style.display='none';
+      state.pendingVote=null;
+      chatLine('* '+cname+' joined the game');
+    }
+  }
+
+  /* -------- Ship design library (debounced snapshots; bots can adopt) -------- */
+  function layoutCost(g){
+    const total={iron:0,silicon:0,carbon:0,rare:0};
+    for(let y=0;y<9;y++)for(let x=0;x<9;x++){
+      const c=g[y][x]; if(!c || c.type==='core') continue;
+      let k=c.type;
+      if(c.type==='gun') k='gun_'+(c.variant||'basic');
+      const it=ITEMS[k]; if(!it) continue;
+      for(const [m,n] of Object.entries(it.cost)) total[m]=(total[m]||0)+n;
+    }
+    return total;
+  }
+  function cloneLayout(g){
+    const out=[];
+    for(let y=0;y<9;y++){ const r=[]; for(let x=0;x<9;x++){ r.push(g[y][x]?{...g[y][x]}:null); } out.push(r); }
+    return out;
+  }
+  function layoutHash(g){
+    let s='';
+    for(let y=0;y<9;y++)for(let x=0;x<9;x++){
+      const c=g[y][x]; if(!c){ s+='-'; continue; }
+      s+='|'+c.type+(c.variant||'')+(c.unique||'')+(c.aim?.toFixed(2)||'')+(c.auto?'A':'')+(c.multi||1);
+    }
+    return s;
+  }
+  const LIB_KEY='sortie_library_v1';
+  function saveLibrary(){
+    try{ localStorage.setItem(LIB_KEY, JSON.stringify(state.shipLibrary)); }catch(_){}
+  }
+  function loadLibrary(){
+    try{
+      const s=localStorage.getItem(LIB_KEY);
+      if(s){ const arr=JSON.parse(s); if(Array.isArray(arr)) state.shipLibrary=arr; }
+    }catch(_){}
+  }
+  loadLibrary();
+  function snapshotMyLayout(){
+    const me=state.players[state.me.id]; if(!me) return;
+    const h=layoutHash(me.layout);
+    if(state.shipLibrary.some(d=>d.hash===h)) return; // dedupe across whole library
+    const design={layout:cloneLayout(me.layout),cost:layoutCost(me.layout),hash:h,author:state.me.name||'me'};
+    state.shipLibrary.push(design);
+    while(state.shipLibrary.length>40) state.shipLibrary.shift();
+    chatLine('* design saved to library (#'+state.shipLibrary.length+')');
+    saveLibrary();
+    Net.broadcast({kind:'design',design});
+    if(state.docked) renderHub();
+  }
+  function botTryUpgrade(bot){
+    if(!state.shipLibrary.length) return;
+    const pick=state.shipLibrary[Math.floor(Math.random()*state.shipLibrary.length)];
+    for(const m in pick.cost){ if((bot.materials[m]||0) < pick.cost[m]) return; }
+    for(const m in pick.cost){ bot.materials[m]-=pick.cost[m]; }
+    bot.layout=cloneLayout(pick.layout);
+    const s=shipStats(bot); bot.maxHp=s.maxHp; bot.hp=Math.min(bot.maxHp,bot.hp+5);
+  }
+
+  /* -------- Game logic -------- */
+  function startPlaying(){
+    if(state.mode==='playing') return;
+    const gameMode=document.getElementById('gamemode').value||'deathmatch';
+    const mins=Math.max(0,Math.min(60,parseInt(document.getElementById('roundmin').value)||0));
+    const goal=Math.max(0,Math.min(999,parseInt(document.getElementById('killgoal').value)||0));
+    if(gameMode==='deathmatch' && mins===0 && goal===0){
+      alert('Set at least one round end condition: round length or kill goal.');
+      return;
+    }
+    state.gameMode=gameMode;
+    if(gameMode==='race'){
+      state.raceCombat=document.getElementById('raceCombat').checked;
+      const desired=Math.max(3,Math.min(12,parseInt(document.getElementById('raceCheckpoints').value)||6));
+      state.raceLaps=Math.max(1,Math.min(10,parseInt(document.getElementById('raceLaps').value)||1));
+      state._raceDesired=desired; // remember target before genWorld
+    }
+    state.mode='playing';
+    document.getElementById('lobby').style.display='none';
+    if(state.platforms.length===0) genWorld();
+    // trim race checkpoints to desired count for this round
+    if(state.gameMode==='race'){
+      state.raceCheckpoints = state.raceCheckpoints.slice(0, state._raceDesired);
+    }
+    const myTeam=Math.max(0,Math.min(5,parseInt(document.getElementById('myteam').value)||0));
+    const p=spawnPlayer(state.me.id,state.me.name,myTeam);
+    if(state.gameMode==='race' && state.raceCheckpoints.length){
+      // spread racers around checkpoint 0
+      const cp=state.raceCheckpoints[0];
+      const a=Math.random()*Math.PI*2, r=cp.r+30;
+      p.x=cp.x+Math.cos(a)*r; p.y=cp.y+Math.sin(a)*r; p.vx=0; p.vy=0;
+      p.rot=Math.atan2(state.raceCheckpoints[1].y-p.y, state.raceCheckpoints[1].x-p.x);
+      p.checkpoint=0; p.lap=0; p.raceTime=0;
+    } else {
+      const hub=state.platforms[0];
+      if(hub){ p.x=hub.x; p.y=hub.y; p.vx=0; p.vy=0; }
+    }
+    p.spawnX=p.x; p.spawnY=p.y;
+    p.grace=180;
+    state.players[state.me.id]=p;
+    Net.broadcast({kind:'team',team:myTeam});
+    spawnAIs();
+    state.roundEndTick=mins>0?(mins*60*60):0;
+    state.killGoal=goal;
+    state.roundEnded=false;
+    state.raceFirstFinishTick=0;
+    state.raceFinishOrder=[];
+    if(state.gameMode==='race'){
+      const peerCount=Object.keys(Net.peers).length;
+      if(peerCount>0){
+        state.raceCountdown = -1; // waiting on peer ready signals
+        state.raceExpectedReadies = peerCount;
+        state.raceWaitStartTick = 0;
+        // tell peers we're ready (they can start their countdown when they hear from all of us)
+        Net.broadcast({kind:'race_ready'});
+      } else {
+        state.raceCountdown = 180; // solo race: 3-second countdown immediately
+      }
+    } else {
+      state.raceCountdown = 0;
+    }
+    requestAnimationFrame(loop);
+  }
+
+  function makeNpcLayout(kind){
+    const g=[];
+    for(let y=0;y<9;y++){const r=[];for(let x=0;x<9;x++) r.push(null); g.push(r);}
+    g[4][4]={type:'core'};
+    g[4][3]={type:'hull'};g[4][5]={type:'hull'};g[3][4]={type:'hull'};g[5][4]={type:'hull'};
+    if(kind==='pirate'){
+      g[4][6]={type:'gun',variant:'basic',aim:0,auto:false,multi:1};
+      g[4][2]={type:'engine'};
+      g[3][3]={type:'hull'}; g[5][3]={type:'hull'};
+    } else {
+      // trader — armored, multiple engines, no guns
+      g[4][2]={type:'engine'}; g[4][1]={type:'engine'};
+      g[3][3]={type:'armor'}; g[5][3]={type:'armor'};
+      g[3][5]={type:'armor'}; g[5][5]={type:'armor'};
+    }
+    return g;
+  }
+  function makeKingLayout(){
+    const g=[];
+    for(let y=0;y<9;y++){const r=[];for(let x=0;x<9;x++) r.push(null); g.push(r);}
+    g[4][4]={type:'core'};
+    // beefy hull spread
+    for(const [x,y] of [[3,4],[5,4],[4,3],[4,5],[3,3],[5,3],[3,5],[5,5],[2,4],[6,4],[4,2],[4,6]]){
+      g[y][x]={type:'hull'};
+    }
+    // armor
+    g[3][2]={type:'armor'}; g[5][2]={type:'armor'};
+    g[3][6]={type:'armor'}; g[5][6]={type:'armor'};
+    // dual heavy guns + a basic
+    g[4][6]={type:'gun',variant:'heavy',aim:0,auto:false,multi:1};
+    g[3][6]={type:'gun',variant:'basic',aim:Math.PI/8,auto:false,multi:2};
+    g[5][6]={type:'gun',variant:'basic',aim:-Math.PI/8,auto:false,multi:2};
+    // engines + shield
+    g[4][1]={type:'engine'}; g[3][1]={type:'engine'}; g[5][1]={type:'engine'};
+    g[2][4]={type:'shield'};
+    return g;
+  }
+  function spawnPirateKing(){
+    if(state.kingActive) return;
+    const id='pirate_king_'+rid();
+    const ang=Math.random()*Math.PI*2;
+    const r=2500+Math.random()*WORLD*0.4;
+    const p={
+      id, name:'Pirate King', team:9, pirate:true, king:true,
+      x:Math.cos(ang)*r, y:Math.sin(ang)*r, vx:0, vy:0, rot:Math.random()*Math.PI*2,
+      layout:makeKingLayout(), hp:0, maxHp:0, fireCd:0,
+      shield:0, shieldMax:0, shieldCd:0, boost:0, boostMax:0,
+      kills:0, deaths:0, creds:0, materials:{iron:0,silicon:0,carbon:0,rare:0},
+      alive:true, respawn:0, grace:0, docked:false, thrusting:false,
+      wanderTarget:null, wanderCd:0
+    };
+    const s=shipStats(p);
+    p.maxHp = Math.floor(s.maxHp*2.0); // double HP
+    p.hp = p.maxHp;
+    p.shieldMax = s.shieldMax; p.shield = p.shieldMax;
+    p._mass = s.mass;
+    state.players[id]=p;
+    state.pirateIds.push(id);
+    state.kingActive=true;
+    chatLine('☠ PIRATE KING has arrived!');
+    killFeed('☠ Pirate King appeared');
+  }
+  function spawnPirate(){
+    if(state.pirateIds.length>=4) return;
+    const id='pirate_'+rid();
+    const ang=Math.random()*Math.PI*2;
+    const r=2000+Math.random()*WORLD*0.5;
+    const p={
+      id, name:'Pirate', team:9, pirate:true,
+      x:Math.cos(ang)*r, y:Math.sin(ang)*r, vx:0, vy:0, rot:Math.random()*Math.PI*2,
+      layout:makeNpcLayout('pirate'), hp:0, maxHp:0, fireCd:0,
+      kills:0, deaths:0, creds:0, materials:{iron:0,silicon:0,carbon:0,rare:0},
+      alive:true, respawn:0, grace:0, docked:false, thrusting:false,
+      wanderTarget:null, wanderCd:0
+    };
+    const s=shipStats(p); p.maxHp=s.maxHp; p.hp=p.maxHp; p._mass=s.mass;
+    state.players[id]=p;
+    state.pirateIds.push(id);
+    chatLine('⚠ pirate appeared');
+  }
+  function spawnTrader(){
+    if(state.traderIds.length>=2 || state.platforms.length<2) return;
+    const id='trader_'+rid();
+    const start=state.platforms[Math.floor(Math.random()*state.platforms.length)];
+    const p={
+      id, name:'Trader', team:8, trader:true,
+      x:start.x, y:start.y, vx:0, vy:0, rot:0,
+      layout:makeNpcLayout('trader'), hp:0, maxHp:0, fireCd:0,
+      kills:0, deaths:0, creds:0, materials:{iron:0,silicon:0,carbon:0,rare:0},
+      alive:true, respawn:0, grace:0, docked:false, thrusting:false,
+      targetHub:null, stock:randomTraderStock()
+    };
+    const s=shipStats(p); p.maxHp=s.maxHp; p.hp=p.maxHp; p._mass=s.mass;
+    // pick a different platform as target
+    do{ p.targetHub=state.platforms[Math.floor(Math.random()*state.platforms.length)]; } while(p.targetHub===start);
+    state.players[id]=p;
+    state.traderIds.push(id);
+  }
+  function randomTraderStock(){
+    const stock={};
+    const baseKeys=Object.keys(UNIQUE_ITEMS);
+    const n=2+Math.floor(Math.random()*2);
+    const shuffled=baseKeys.slice().sort(()=>Math.random()-0.5);
+    for(let i=0;i<n;i++){
+      stock[shuffled[i]] = {price: 180+Math.floor(Math.random()*180), qty: 1+Math.floor(Math.random()*2)};
+    }
+    // race mode: traders also carry race-only consumables
+    if(state.gameMode==='race'){
+      stock['super_boost'] = {price: 90+Math.floor(Math.random()*60), qty: 1+Math.floor(Math.random()*3)};
+      stock['gas_cloud']  = {price: 130+Math.floor(Math.random()*70), qty: 1+Math.floor(Math.random()*2)};
+    }
+    return stock;
+  }
+  // Add repulsion away from any well within range to a steering vector.
+  // Returns the modified [dx, dy] plus an "inWellDanger" flag for thrust boosting.
+  function avoidWells(bot, dx, dy){
+    let danger=false;
+    for(const w of state.gravWells){
+      const wdx=bot.x-w.x, wdy=bot.y-w.y;
+      const d2=wdx*wdx+wdy*wdy;
+      if(d2>1800*1800) continue;
+      const d=Math.sqrt(d2);
+      // closer = much stronger; cap to avoid runaway
+      const repel = Math.min(2500, w.strength*12/Math.max(d,80));
+      dx += wdx/d*repel;
+      dy += wdy/d*repel;
+      if(d<1400) danger=true;
+    }
+    return [dx, dy, danger];
+  }
+  function despawnNpc(idArr, id){
+    delete state.players[id];
+    const i=idArr.indexOf(id);
+    if(i>=0) idArr.splice(i,1);
+    Net.broadcast({kind:'npc_despawn', npcId:id});
+  }
+  function spawnPickup(x,y){
+    const keys=Object.keys(UNIQUE_ITEMS);
+    const type=keys[Math.floor(Math.random()*keys.length)];
+    state.pickups.push({
+      x,y,
+      vx:(Math.random()-0.5)*0.4, vy:(Math.random()-0.5)*0.4,
+      rot:0, type, life:3600 // 60s @ 60fps
+    });
+  }
+  function stepTraderDock(){
+    const me=state.players[state.me.id];
+    if(!me || !me.alive || state.docked){ // can't dock with trader while at a hub
+      if(state.dockedTrader){ state.dockedTrader=null; hideTraderUI(); }
+      return;
+    }
+    // already docked: check we still qualify
+    if(state.dockedTrader){
+      const tr=state.players[state.dockedTrader];
+      if(!tr || !tr.alive){ state.dockedTrader=null; hideTraderUI(); return; }
+      const dx=tr.x-me.x, dy=tr.y-me.y;
+      const dvx=tr.vx-me.vx, dvy=tr.vy-me.vy;
+      if(dx*dx+dy*dy>140*140 || dvx*dvx+dvy*dvy>1.2*1.2){
+        state.dockedTrader=null; hideTraderUI();
+      }
+      return;
+    }
+    // try to dock
+    for(const tid of state.traderIds){
+      const tr=state.players[tid]; if(!tr || !tr.alive) continue;
+      const dx=tr.x-me.x, dy=tr.y-me.y;
+      if(dx*dx+dy*dy>80*80) continue;
+      const dvx=tr.vx-me.vx, dvy=tr.vy-me.vy;
+      if(dvx*dvx+dvy*dvy>0.5*0.5) continue;
+      state.dockedTrader=tid;
+      // park ship to trader velocity for stable trade
+      me.vx=tr.vx; me.vy=tr.vy;
+      showTraderUI(tr);
+      Sound.dock();
+      break;
+    }
+  }
+  function showTraderUI(tr){
+    let el=document.getElementById('traderUI');
+    if(!el){
+      el=document.createElement('div');
+      el.id='traderUI'; el.className='panel';
+      el.style.cssText='display:block;left:50%;top:80px;transform:translateX(-50%);width:min(360px,92vw);z-index:6';
+      el.innerHTML='<h3>🛒 Trader</h3><div class="body" id="traderBody"></div>';
+      document.body.appendChild(el);
+    }
+    el.style.display='block';
+    renderTraderUI(tr);
+  }
+  function hideTraderUI(){
+    const el=document.getElementById('traderUI');
+    if(el) el.style.display='none';
+  }
+  function renderTraderUI(tr){
+    const body=document.getElementById('traderBody');
+    const me=state.players[state.me.id];
+    let h='<div class="row dim" style="font-size:11px">Match velocity stays docked. Move away or accelerate to undock.</div>';
+    h+=`<div class="row"><b>Credits: ${me.creds||0}</b></div><hr>`;
+    for(const k in tr.stock){
+      const it=UNIQUE_ITEMS[k];
+      const s=tr.stock[k];
+      const disabled=(me.creds||0)<s.price || s.qty<=0;
+      h+=`<div class="row">
+        <div style="flex:1;line-height:1.3"><b>${it.name}</b> <span class="dim">×${s.qty}</span><br><span class="dim" style="font-size:11px">${it.desc}</span></div>
+        <button ${disabled?'disabled style="opacity:.4"':''} onclick="Game.buyFromTrader('${k}')">Buy ${s.price}cr</button>
+      </div>`;
+    }
+    if(Object.keys(tr.stock).length===0) h+='<div class="dim">Sold out — try a different trader.</div>';
+    h+='<hr><div class="row"><button onclick="Game.undockTrader()">Disengage</button></div>';
+    body.innerHTML=h;
+  }
+  function buyFromTrader(key){
+    if(!state.dockedTrader) return;
+    const tr=state.players[state.dockedTrader]; if(!tr) return;
+    const stock=tr.stock[key]; if(!stock || stock.qty<=0) return;
+    const me=state.players[state.me.id];
+    if((me.creds||0)<stock.price){ chatLine('not enough credits'); return; }
+    me.creds-=stock.price;
+    me.inventory=me.inventory||{};
+    me.inventory[key]=(me.inventory[key]||0)+1;
+    stock.qty--;
+    chatLine('* bought '+UNIQUE_ITEMS[key].name);
+    renderTraderUI(tr);
+  }
+  function undockTrader(){
+    state.dockedTrader=null;
+    hideTraderUI();
+  }
+  function advanceCheckpoint(p){
+    if(state.gameMode!=='race') return;
+    if(!state.raceCheckpoints.length) return;
+    const idx = (p.checkpoint||0) % state.raceCheckpoints.length;
+    const cp = state.raceCheckpoints[idx];
+    const dx=p.x-cp.x, dy=p.y-cp.y;
+    if(dx*dx+dy*dy < cp.r*cp.r){
+      p.checkpoint = (p.checkpoint||0) + 1;
+      if(p.checkpoint >= state.raceCheckpoints.length){
+        p.checkpoint = 0;
+        p.lap = (p.lap||0) + 1;
+        if(p.lap >= state.raceLaps && !state.raceFinishOrder.includes(p.id)){
+          state.raceFinishOrder.push(p.id);
+          if(p.id===state.me.id) chatLine('* FINISH! position '+state.raceFinishOrder.length);
+          else chatLine('* '+(p.name||p.id.slice(0,6))+' finished — position '+state.raceFinishOrder.length);
+          if(state.raceFinishOrder.length===1){ state.raceFirstFinishTick = state.tick; }
+        } else if(p.id===state.me.id){
+          chatLine('* lap '+p.lap+'/'+state.raceLaps);
+        }
+      }
+    }
+  }
+  function stepRace(){
+    // tick down temporary nebulae regardless of mode
+    for(let i=state.nebulae.length-1;i>=0;i--){
+      const n=state.nebulae[i];
+      if(n.life!==undefined){ n.life--; if(n.life<=0) state.nebulae.splice(i,1); }
+    }
+    // super-boost expiry
+    const me0=state.players[state.me.id];
+    if(me0 && me0._boostBoostUntil && state.tick>=me0._boostBoostUntil){
+      const s=shipStats(me0);
+      me0.boostMax=s.boostCap;
+      if(me0.boost>me0.boostMax) me0.boost=me0.boostMax;
+      me0._boostBoostUntil=0;
+      chatLine('* super boost ended');
+    }
+    if(state.gameMode!=='race' || state.roundEnded) return;
+    const me=state.players[state.me.id];
+    if(me && me.alive) advanceCheckpoint(me);
+    // bots, pirates not racing — but other player ships need their crossings too (local sim of remote)
+    for(const id in state.players){
+      const p=state.players[id];
+      if(id===state.me.id) continue;
+      if(p.pirate || p.trader || !p.alive) continue;
+      advanceCheckpoint(p);
+    }
+    // end condition: timeout 30s after first finish
+    if(state.raceFirstFinishTick>0 && state.tick - state.raceFirstFinishTick >= state.raceGracePeriod){
+      endRound();
+    }
+  }
+  function stepPickups(){
+    const me=state.players[state.me.id];
+    for(let i=state.pickups.length-1;i>=0;i--){
+      const pk=state.pickups[i];
+      pk.x+=pk.vx; pk.y+=pk.vy;
+      pk.rot+=0.08;
+      pk.life--;
+      if(pk.life<=0){ state.pickups.splice(i,1); continue; }
+      if(me && me.alive && !state.docked){
+        const dx=pk.x-me.x, dy=pk.y-me.y;
+        if(dx*dx+dy*dy < 35*35){
+          me.inventory=me.inventory||{};
+          me.inventory[pk.type]=(me.inventory[pk.type]||0)+1;
+          state.pickups.splice(i,1);
+          chatLine('+'+UNIQUE_ITEMS[pk.type].name);
+          Sound.dock();
+        }
+      }
+    }
+  }
+
+  function spawnAIs(){
+    const n=Math.max(0,Math.min(12,parseInt(document.getElementById('aicount').value)||0));
+    for(let i=0;i<n;i++){
+      const id='ai_'+rid();
+      const team=(i%5)+1; // round-robin across teams 1..5
+      const bot=spawnPlayer(id,'Bot-'+(i+1),team);
+      if(state.gameMode==='race' && state.raceCheckpoints.length){
+        const cp=state.raceCheckpoints[0];
+        const a=Math.random()*Math.PI*2, r=cp.r+30+Math.random()*60;
+        bot.x=cp.x+Math.cos(a)*r; bot.y=cp.y+Math.sin(a)*r;
+        bot.rot=Math.atan2(state.raceCheckpoints[1].y-bot.y, state.raceCheckpoints[1].x-bot.x);
+        bot.checkpoint=0; bot.lap=0;
+      } else {
+        const hub=state.platforms[(i+1)%state.platforms.length];
+        if(hub){
+          const a=Math.random()*Math.PI*2, r=hub.r+PLATFORM_DEFENSE+200+Math.random()*400;
+          bot.x=hub.x+Math.cos(a)*r; bot.y=hub.y+Math.sin(a)*r;
+        }
+      }
+      bot.spawnX=bot.x; bot.spawnY=bot.y;
+      bot.grace=180;
+      bot.ai=true; bot.aiCd=0;
+      state.players[id]=bot;
+      state.aiIds.push(id);
+    }
+  }
+
+  function breakAsteroid(a){
+    // remove
+    state.asteroids=state.asteroids.filter(x=>x!==a);
+    // award materials to last hitter? Simpler: spawn pickup auto to all in radius
+    // Actually award to player who shot the killing bullet — track via lastHitter
+    if(a._killer){
+      const p=state.players[a._killer];
+      if(p && p.materials){
+        const yield_=Math.max(1,Math.floor(a.r/15));
+        p.materials[a.mat]=(p.materials[a.mat]||0)+yield_;
+        if(a._killer===state.me.id) chatLine('+'+yield_+' '+a.mat);
+      }
+    }
+    if(a.r>30){
+      // split into 2-3 chunks
+      const n=2+Math.floor(Math.random()*2);
+      for(let i=0;i<n;i++){
+        const ang=Math.random()*Math.PI*2;
+        const sp=0.3+Math.random()*0.6;
+        const nA=spawnAsteroid({x:a.x,y:a.y,vx:a.vx+Math.cos(ang)*sp,vy:a.vy+Math.sin(ang)*sp,size:a.r*0.55});
+        nA.mat=a.mat;
+        state.asteroids.push(nA);
+      }
+    }
+    // below 20 = dust, not tracked (already not respawned)
+  }
+
+  // Apply damage: shield soaks first, hp soaks rest. Reset shield regen cooldown.
+  function takeDamage(p, dmg){
+    p.shieldCd = 180; // 3 sec out-of-combat before regen resumes
+    if(p.shield>0){
+      const absorbed = Math.min(p.shield, dmg);
+      p.shield -= absorbed;
+      dmg -= absorbed;
+    }
+    if(dmg>0) p.hp -= dmg;
+  }
+  function fireGuns(p){
+    if(p.fireCd>0) return;
+    if(p.overheated) return; // locked until heat drops below threshold
+    const stats=shipStats(p);
+    if(stats.guns.length===0) return;
+    const playSfx=(p.id===state.me.id);
+    let firedAnyLaser=false, firedAny=false;
+    let heatGain=0;
+    for(const g of stats.guns){
+      // gun world position
+      const cosR=Math.cos(p.rot),sinR=Math.sin(p.rot);
+      const gx=p.x + (g.x*cosR - g.y*sinR)*8;
+      const gy=p.y + (g.x*sinR + g.y*cosR)*8;
+      const aim=p.rot + g.aim;
+      const dmg = g.unique==='plasma_gun'?12 : (g.variant==='heavy'?8 : (g.variant==='laser'?4 : 3));
+      const speed = g.variant==='laser'?12 : (g.unique==='plasma_gun'?6 : 8);
+      const shots=g.multi||1;
+      for(let i=0;i<shots;i++){
+        const spread=(shots>1?((i-(shots-1)/2)*0.08):0);
+        const ang=aim+spread;
+        const bx=Math.cos(ang)*speed, by=Math.sin(ang)*speed;
+        state.bullets.push({x:gx,y:gy,vx:p.vx+bx,vy:p.vy+by,t:120,owner:p.id,dmg,r:3});
+        Net.broadcast({kind:'bullet',x:gx,y:gy,vx:p.vx+bx,vy:p.vy+by,dmg});
+        firedAny=true;
+        if(g.variant==='laser') firedAnyLaser=true;
+      }
+      // per-gun heat: plasma highest, laser lowest; coolant reduces multiplicatively
+      heatGain += g.unique==='plasma_gun'?20 : g.variant==='heavy'?15 : g.variant==='laser'?4 : 10;
+    }
+    heatGain *= stats.heatMult;
+    if(playSfx && firedAny){ firedAnyLaser?Sound.fireLaser():Sound.fire(); }
+    p.fireCd = stats.guns.some(g=>g.unique==='plasma_gun')?24:12;
+    p.heat = (p.heat||0) + heatGain;
+    if(p.heat>=stats.maxHeat){ p.overheated=true; if(playSfx) chatLine('* guns overheated'); }
+  }
+
+  function step(){
+    // race countdown / wait: -1 = waiting for peer ready, >0 = counting down
+    if(state.raceCountdown === -1){
+      // start countdown when all expected peer readies received, or after a 10s timeout
+      state.raceWaitStartTick = (state.raceWaitStartTick||0) + 1;
+      if(state.racePeersReady.size >= state.raceExpectedReadies || state.raceWaitStartTick > 600){
+        state.raceCountdown = 180;
+        state.racePeersReady.clear();
+        chatLine('* peers ready — starting race');
+      }
+    } else if(state.raceCountdown>0){
+      const before=Math.ceil(state.raceCountdown/60);
+      state.raceCountdown--;
+      const after=Math.ceil(state.raceCountdown/60);
+      if(after!==before){
+        if(after>0) Sound.fire(); else Sound.fireLaser();
+      }
+    }
+    const me=state.players[state.me.id];
+    if(me && me.alive){
+      const stats=shipStats(me);
+      me._mass=stats.mass; me._heatDecay=stats.heatDecay; me._maxHeat=stats.maxHeat;
+      if(state.raceCountdown!==0){
+        // freeze (waiting OR counting down)
+        me.vx=0; me.vy=0; me.thrusting=false; me.boosting=false;
+      } else if(state.docked){
+        // parked at platform; ignore all flight input
+        if(state.nearPlatform){ me.x=state.nearPlatform.x; me.y=state.nearPlatform.y; me.vx=state.nearPlatform.vx||0; me.vy=state.nearPlatform.vy||0; }
+      } else {
+        // joystick analog input (touch); fed into rot/thrust
+        let joyR=0, joyT=0;
+        if(state.joy.active){
+          const mag=Math.hypot(state.joy.x,state.joy.y);
+          if(mag>0.15){
+            const ang=Math.atan2(-state.joy.y,state.joy.x); // screen Y is down, world Y is up
+            let diff=ang-me.rot;
+            while(diff>Math.PI)diff-=Math.PI*2;
+            while(diff<-Math.PI)diff+=Math.PI*2;
+            joyR=Math.max(-1,Math.min(1,diff*2));
+            joyT=Math.min(1,mag);
+          }
+        }
+        if(state.keys.ArrowLeft||state.keys.KeyA) me.rot+=stats.turn;
+        else if(state.keys.ArrowRight||state.keys.KeyD) me.rot-=stats.turn;
+        else if(joyR) me.rot+=stats.turn*joyR;
+        let didThrust=false;
+        // boost: held + has pool → 2× thrust, drains pool
+        const wantBoost=(state.keys.ShiftLeft||state.keys.ShiftRight||state.boostHeld);
+        const canBoost=me.boost>0 && me.boostMax>0;
+        const boosting = wantBoost && canBoost;
+        const tmul = boosting?2.2:1.0;
+        if(state.keys.ArrowUp||state.keys.KeyW){ me.vx+=Math.cos(me.rot)*stats.thrust*tmul; me.vy+=Math.sin(me.rot)*stats.thrust*tmul; didThrust=true; }
+        else if(joyT>0){ me.vx+=Math.cos(me.rot)*stats.thrust*joyT*tmul; me.vy+=Math.sin(me.rot)*stats.thrust*joyT*tmul; didThrust=true; }
+        me.thrusting=didThrust;
+        me.boosting=boosting;
+        // pool: drain while boosting, regen otherwise
+        if(boosting && didThrust){ me.boost = Math.max(0, me.boost - me.boostMax/(60*3)); }
+        else if(me.boost<me.boostMax){ me.boost = Math.min(me.boostMax, me.boost + me.boostMax/(60*8)); }
+      }
+      if(!state.docked && state.raceCountdown===0 && (state.keys.Space || state.fireHeld)){ fireGuns(me); }
+      // gun auto-fire
+      for(const g of stats.guns){ if(g.auto && me.fireCd<=0){ fireGuns(me); } }
+      me.fireCd=Math.max(0,me.fireCd-1);
+      const maxSpeed = me.boosting?18:10;
+      const sp=Math.hypot(me.vx,me.vy); if(sp>maxSpeed){ me.vx*=maxSpeed/sp; me.vy*=maxSpeed/sp; }
+      // auto-repair: each module heals 2 hp/sec, eats 1 iron per 5 hp restored
+      if(stats.repair>0 && me.hp<me.maxHp){
+        me._repAcc=(me._repAcc||0)+stats.repair*(2/60);
+        while(me._repAcc>=1 && me.hp<me.maxHp){
+          const needIron=(me._repaired||0)%5===0;
+          if(needIron){
+            if((me.materials.iron||0)<1){ me._repAcc=0; break; }
+            me.materials.iron-=1;
+          }
+          me.hp=Math.min(me.maxHp,me.hp+1);
+          me._repaired=(me._repaired||0)+1;
+          me._repAcc-=1;
+        }
+      } else { me._repAcc=0; }
+    }
+
+    // periodic bot upgrade attempt (every ~15s, stagger per bot via index)
+    if(state.tick%30===0 && state.shipLibrary.length){
+      for(let i=0;i<state.aiIds.length;i++){
+        if((state.tick/30 + i) % 30 !== 0) continue;
+        const bot=state.players[state.aiIds[i]]; if(bot && bot.alive) botTryUpgrade(bot);
+      }
+    }
+
+    // AI bots controlled by this peer (frozen during race countdown OR waiting on peers)
+    if(state.raceCountdown!==0 && state.gameMode==='race'){
+      for(const aid of state.aiIds){
+        const bot=state.players[aid]; if(!bot) continue;
+        bot.vx=0; bot.vy=0; bot.thrusting=false;
+      }
+      for(const pid of state.pirateIds){
+        const pr=state.players[pid]; if(!pr) continue;
+        pr.vx=0; pr.vy=0;
+      }
+      for(const tid of state.traderIds){
+        const tr=state.players[tid]; if(!tr) continue;
+        tr.vx=0; tr.vy=0;
+      }
+    } else
+    for(const aid of state.aiIds){
+      const bot=state.players[aid]; if(!bot) continue;
+      if(!bot.alive) continue;
+      const stats=shipStats(bot);
+      bot._mass=stats.mass; bot._heatDecay=stats.heatDecay; bot._maxHeat=stats.maxHeat;
+      let bestD=Infinity, tx=0, ty=0, gotTarget=false, isShip=false;
+      // race mode: aim for next checkpoint (advance progress just like player)
+      if(state.gameMode==='race' && state.raceCheckpoints.length){
+        advanceCheckpoint(bot);
+        const cp=state.raceCheckpoints[(bot.checkpoint||0)%state.raceCheckpoints.length];
+        tx=cp.x; ty=cp.y; gotTarget=true; isShip=false;
+        const dx=tx-bot.x, dy=ty-bot.y; bestD=dx*dx+dy*dy;
+      } else {
+        for(const pid in state.players){
+          if(pid===aid) continue;
+          const op=state.players[pid]; if(!op.alive) continue;
+          if(op.trader) continue;
+          if(op.docked) continue;
+          if(op.grace>0) continue;
+          if(!op.pirate && op.team!==0 && op.team===bot.team) continue;
+          const dx=op.x-bot.x, dy=op.y-bot.y, d=dx*dx+dy*dy;
+          if(d<bestD && d<1400*1400){ bestD=d; tx=op.x; ty=op.y; gotTarget=true; isShip=true; }
+        }
+        if(!gotTarget){
+          for(const a of state.asteroids){
+            if(a.r<30) continue;
+            const dx=a.x-bot.x, dy=a.y-bot.y, d=dx*dx+dy*dy;
+            if(d<bestD && d<1100*1100){ bestD=d; tx=a.x; ty=a.y; gotTarget=true; }
+          }
+        }
+      }
+      let botThrust=false;
+      if(gotTarget){
+        let dx=tx-bot.x, dy=ty-bot.y;
+        let danger;
+        [dx,dy,danger]=avoidWells(bot,dx,dy);
+        const desired=Math.atan2(dy,dx);
+        let diff=desired-bot.rot;
+        while(diff>Math.PI)diff-=Math.PI*2;
+        while(diff<-Math.PI)diff+=Math.PI*2;
+        bot.rot+=Math.max(-stats.turn,Math.min(stats.turn,diff));
+        const dist=Math.sqrt(bestD);
+        const close=isShip?500:300;
+        const thrustMult = danger?1.0 : 0.7;
+        if((dist>close || danger) && Math.abs(diff)<0.7){
+          bot.vx+=Math.cos(bot.rot)*stats.thrust*thrustMult;
+          bot.vy+=Math.sin(bot.rot)*stats.thrust*thrustMult;
+          botThrust=true;
+        }
+        if(!danger && Math.abs(diff)<0.18 && bot.fireCd<=0){ fireGuns(bot); }
+      } else {
+        let dx=Math.cos(bot.rot), dy=Math.sin(bot.rot), danger;
+        [dx,dy,danger]=avoidWells(bot,dx,dy);
+        if(danger){
+          const desired=Math.atan2(dy,dx);
+          let diff=desired-bot.rot;
+          while(diff>Math.PI)diff-=Math.PI*2;
+          while(diff<-Math.PI)diff+=Math.PI*2;
+          bot.rot+=Math.max(-stats.turn,Math.min(stats.turn,diff));
+          bot.vx+=Math.cos(bot.rot)*stats.thrust;
+          bot.vy+=Math.sin(bot.rot)*stats.thrust;
+        } else {
+          bot.rot+=0.005;
+          bot.vx+=Math.cos(bot.rot)*stats.thrust*0.2;
+          bot.vy+=Math.sin(bot.rot)*stats.thrust*0.2;
+        }
+        botThrust=true;
+      }
+      bot.thrusting=botThrust;
+      bot.fireCd=Math.max(0,bot.fireCd-1);
+      const sp=Math.hypot(bot.vx,bot.vy); if(sp>8){ bot.vx*=8/sp; bot.vy*=8/sp; }
+    }
+
+    // NPC spawn timer (only if at least one platform exists)
+    if(state.platforms.length){
+      state.npcSpawnCd--;
+      if(state.npcSpawnCd<=0){
+        state.npcSpawnCd=2400 + Math.floor(Math.random()*1200); // 40-60s
+        if(Math.random()<0.6) spawnPirate(); else spawnTrader();
+      }
+    }
+    // pirate AI — roam, attack any visible player
+    for(const pid of state.pirateIds){
+      const pr=state.players[pid]; if(!pr || !pr.alive) continue;
+      const stats=shipStats(pr); pr._mass=stats.mass; pr._heatDecay=stats.heatDecay; pr._maxHeat=stats.maxHeat;
+      // pick / cycle a wander target
+      pr.wanderCd--;
+      if(!pr.wanderTarget || pr.wanderCd<=0){
+        const a=Math.random()*Math.PI*2, r=600+Math.random()*1500;
+        pr.wanderTarget={x:pr.x+Math.cos(a)*r, y:pr.y+Math.sin(a)*r};
+        pr.wanderCd=300+Math.floor(Math.random()*300);
+      }
+      // any nearby live player target overrides wander
+      let tx=pr.wanderTarget.x, ty=pr.wanderTarget.y, isCombat=false, bestD=Infinity;
+      for(const oid in state.players){
+        const op=state.players[oid];
+        if(!op.alive || op.pirate || op.trader || op.docked || op.grace>0) continue;
+        const dx=op.x-pr.x, dy=op.y-pr.y, d=dx*dx+dy*dy;
+        if(d<bestD && d<1100*1100){ bestD=d; tx=op.x; ty=op.y; isCombat=true; }
+      }
+      let dx=tx-pr.x, dy=ty-pr.y, danger;
+      [dx,dy,danger]=avoidWells(pr,dx,dy);
+      const desired=Math.atan2(dy,dx);
+      let diff=desired-pr.rot;
+      while(diff>Math.PI)diff-=Math.PI*2;
+      while(diff<-Math.PI)diff+=Math.PI*2;
+      pr.rot+=Math.max(-stats.turn,Math.min(stats.turn,diff));
+      const dist=Math.sqrt(isCombat?bestD:(dx*dx+dy*dy));
+      const close=isCombat?500:80;
+      const thrustMult = danger?1.0 : 0.6;
+      if((dist>close || danger) && Math.abs(diff)<0.7){
+        pr.vx+=Math.cos(pr.rot)*stats.thrust*thrustMult;
+        pr.vy+=Math.sin(pr.rot)*stats.thrust*thrustMult;
+        pr.thrusting=true;
+      } else { pr.thrusting=false; }
+      if(!danger && isCombat && Math.abs(diff)<0.18 && pr.fireCd<=0){ fireGuns(pr); }
+      pr.fireCd=Math.max(0,pr.fireCd-1);
+      const maxSp=danger?10:7;
+      const sp=Math.hypot(pr.vx,pr.vy); if(sp>maxSp){ pr.vx*=maxSp/sp; pr.vy*=maxSp/sp; }
+    }
+    // trader AI — steady course toward target hub, no combat
+    for(const tid of state.traderIds){
+      const tr=state.players[tid]; if(!tr || !tr.alive) continue;
+      const stats=shipStats(tr); tr._mass=stats.mass;
+      if(!tr.targetHub){
+        tr.targetHub=state.platforms[Math.floor(Math.random()*state.platforms.length)];
+      }
+      let dx=tr.targetHub.x-tr.x, dy=tr.targetHub.y-tr.y;
+      const dist=Math.hypot(dx,dy);
+      if(dist<tr.targetHub.r+50){
+        let next; do{ next=state.platforms[Math.floor(Math.random()*state.platforms.length)]; } while(next===tr.targetHub && state.platforms.length>1);
+        tr.targetHub=next;
+        tr.stock=randomTraderStock();
+      } else {
+        let danger;
+        [dx,dy,danger]=avoidWells(tr,dx,dy);
+        const desired=Math.atan2(dy,dx);
+        let diff=desired-tr.rot;
+        while(diff>Math.PI)diff-=Math.PI*2;
+        while(diff<-Math.PI)diff+=Math.PI*2;
+        tr.rot+=Math.max(-stats.turn,Math.min(stats.turn,diff));
+        const thrustMult = danger?1.0:0.4;
+        if(Math.abs(diff)<0.5){
+          tr.vx+=Math.cos(tr.rot)*stats.thrust*thrustMult;
+          tr.vy+=Math.sin(tr.rot)*stats.thrust*thrustMult;
+          tr.thrusting=true;
+        } else { tr.thrusting=false; }
+        const maxSp = danger?8:3;
+        const sp=Math.hypot(tr.vx,tr.vy); if(sp>maxSp){ tr.vx*=maxSp/sp; tr.vy*=maxSp/sp; }
+      }
+    }
+
+    // move players
+    for(const id in state.players){
+      const p=state.players[id];
+      if(p.grace>0) p.grace--;
+      // shield regen: 3s of no damage taken, then regen ~5s to full
+      if(p.shieldCd>0) p.shieldCd--;
+      else if(p.shieldMax>0 && p.shield<p.shieldMax){
+        p.shield = Math.min(p.shieldMax, p.shield + p.shieldMax/300);
+      }
+      // gun heat decay (boosted by coolant); overheated lock releases at 40% of MAX
+      if(p.heat>0){
+        const decay = (p._heatDecay!==undefined) ? p._heatDecay : 0.5;
+        p.heat = Math.max(0, p.heat - decay);
+      }
+      const releaseAt = (p._maxHeat||100)*0.4;
+      if(p.overheated && p.heat<releaseAt) p.overheated=false;
+      if(!p.alive){
+        if(p.pirate || p.trader){ continue; } // NPCs don't respawn
+        p.respawn--;
+        if(p.respawn<=0){
+          p.alive=true;
+          p.hp=p.maxHp;
+          if(p._raceStun){
+            // revive at the stun position instead of spawnX/Y
+            p.x=p._raceStun.x; p.y=p._raceStun.y; p._raceStun=null;
+          } else {
+            p.x=(p.spawnX!==undefined)?p.spawnX:(Math.random()-0.5)*1000;
+            p.y=(p.spawnY!==undefined)?p.spawnY:(Math.random()-0.5)*1000;
+          }
+          p.vx=0; p.vy=0;
+          p.grace=120;
+          if(state.gameMode==='race') killFeed(p.name+' ↺ back in race','respawn');
+          else killFeed(p.name+' ↺ respawned','respawn');
+        }
+        continue;
+      }
+      p.x+=p.vx; p.y+=p.vy;
+      // wrap world
+      if(p.x>WORLD)p.x=-WORLD; if(p.x<-WORLD)p.x=WORLD;
+      if(p.y>WORLD)p.y=-WORLD; if(p.y<-WORLD)p.y=WORLD;
+    }
+
+    // asteroids
+    for(const a of state.asteroids){
+      a.x+=a.vx; a.y+=a.vy; a.rot+=a.vrot;
+      if(a.x>WORLD)a.x=-WORLD; if(a.x<-WORLD)a.x=WORLD;
+      if(a.y>WORLD)a.y=-WORLD; if(a.y<-WORLD)a.y=WORLD;
+    }
+    // platform auto-defense: vaporize asteroids inside the ring (no split, no drops)
+    for(let i=state.asteroids.length-1;i>=0;i--){
+      const a=state.asteroids[i];
+      for(const pl of state.platforms){
+        const dx=a.x-pl.x, dy=a.y-pl.y;
+        if(dx*dx+dy*dy < (pl.r+PLATFORM_DEFENSE)*(pl.r+PLATFORM_DEFENSE)){
+          state.asteroids.splice(i,1);
+          break;
+        }
+      }
+    }
+
+    // bullets
+    for(const b of state.bullets){ b.x+=b.vx; b.y+=b.vy; b.t--; }
+    state.bullets=state.bullets.filter(b=>b.t>0);
+
+    // collisions: bullets vs asteroids
+    for(const b of state.bullets){
+      if(b._dead) continue;
+      for(const a of state.asteroids){
+        const dx=a.x-b.x, dy=a.y-b.y;
+        if(dx*dx+dy*dy<a.r*a.r){
+          a.hp-=b.dmg;
+          a._killer=b.owner;
+          b._dead=true;
+          if(a.hp<=0){ breakAsteroid(a); }
+          break;
+        }
+      }
+    }
+    // bullets vs players
+    for(const b of state.bullets){
+      if(b._dead) continue;
+      for(const id in state.players){
+        if(id===b.owner) continue;
+        const p=state.players[id]; if(!p.alive) continue;
+        if(p.trader) continue; // traders cannot be harmed
+        if(p.docked) continue;
+        if(p.grace>0) continue;
+        const dx=p.x-b.x, dy=p.y-b.y;
+        if(dx*dx+dy*dy<400){
+          const shooter=state.players[b.owner];
+          // pirates don't damage each other (matches AI targeting)
+          if(p.pirate && shooter?.pirate) continue;
+          // race mode without combat: bullets between non-pirate ships pass through
+          if(state.gameMode==='race' && !state.raceCombat && !p.pirate && !shooter?.pirate) continue;
+          // same non-zero team friendly fire (skipped if either is a pirate, which is hostile to all teams)
+          if(!p.pirate && !shooter?.pirate && p.team!==0 && p.team===shooter?.team) continue;
+          takeDamage(p, b.dmg);
+          b._dead=true;
+          p.hitFlash=8;
+          if(p.id===state.me.id){ Sound.hit(); spawnHitArc(p,b); }
+          if(p.hp<=0){
+            if(p.pirate){
+              // king drops multiple pickups + ends the king event
+              if(p.king){
+                for(let i=0;i<5;i++){ spawnPickup(p.x+(Math.random()-0.5)*40, p.y+(Math.random()-0.5)*40); }
+                state.kingActive=false;
+                state.piratesKilled=0;
+                killFeed(shooter?(shooter.name+' ✗ ☠ Pirate King — JACKPOT'):'Pirate King destroyed');
+                chatLine('☠ Pirate King defeated!');
+              } else {
+                spawnPickup(p.x,p.y);
+                state.piratesKilled++;
+                if(state.piratesKilled>=8 && !state.kingActive){
+                  spawnPirateKing();
+                }
+                if(shooter && !shooter.pirate){ killFeed(shooter.name+' ✗ '+p.name+' (loot!)'); }
+                else killFeed(p.name+' destroyed');
+              }
+              spawnExplosion(p.x,p.y,p.king?40:18); Sound.explosion();
+              despawnNpc(state.pirateIds,p.id);
+            } else {
+              p.alive=false; p.respawn = state.gameMode==='race'?120:180; p.deaths++;
+              // race: stun then revive in place; no inventory/material wipe
+              if(state.gameMode==='race'){
+                p._raceStun={x:p.x, y:p.y};
+                killFeed(p.name+' ↩ stunned'+(shooter?(' by '+shooter.name):''),'respawn');
+              } else {
+                p.materials={iron:0,silicon:0,carbon:0,rare:0}; p.creds=0; p.inventory={};
+                if(shooter){
+                  if(!shooter.pirate) shooter.kills++;
+                  killFeed(shooter.name+' ✗ '+p.name);
+                } else killFeed(p.name+' destroyed');
+              }
+              spawnExplosion(p.x,p.y,18); Sound.explosion();
+            }
+          }
+          break;
+        }
+      }
+    }
+    state.bullets=state.bullets.filter(b=>!b._dead);
+
+    // radioactive nebula: slow HP drain (~6 hp/sec); shields absorb it
+    if(me && me.alive && !state.docked && me.grace<=0 && inRadioactiveNebula(me.x,me.y)){
+      takeDamage(me, 0.1);
+      if(me.hp<=0){
+        me.alive=false; me.respawn = state.gameMode==='race'?120:180; me.deaths++;
+        if(state.gameMode==='race'){
+          me._raceStun={x:me.x,y:me.y};
+          killFeed(me.name+' ↩ stunned by radiation','respawn');
+        } else {
+          me.materials={iron:0,silicon:0,carbon:0,rare:0}; me.creds=0; me.inventory={};
+          killFeed(me.name+' ☢ radiation');
+        }
+        spawnExplosion(me.x,me.y,18); Sound.explosion();
+      }
+    }
+
+    // asteroids vs players
+    if(me && me.alive && !state.docked && me.grace<=0){
+      for(const a of state.asteroids){
+        if(a.r<20) continue;
+        const dx=me.x-a.x, dy=me.y-a.y;
+        const rr=(a.r+10)*(a.r+10);
+        if(dx*dx+dy*dy<rr){
+          takeDamage(me, 0.5);
+          const d=Math.hypot(dx,dy)||1;
+          me.vx+=dx/d*0.3; me.vy+=dy/d*0.3;
+          if(me.hp<=0){
+            me.alive=false; me.respawn = state.gameMode==='race'?120:180; me.deaths++;
+            if(state.gameMode==='race'){
+              me._raceStun={x:me.x, y:me.y};
+              killFeed(me.name+' ↩ stunned by asteroid','respawn');
+            } else {
+              me.materials={iron:0,silicon:0,carbon:0,rare:0}; me.creds=0; me.inventory={};
+              killFeed(me.name+' ✗ asteroid');
+            }
+            spawnExplosion(me.x,me.y,18);
+            Sound.explosion();
+          }
+        }
+      }
+    }
+
+    // gravity wells: acceleration depends only on distance, not mass
+    if(state.gravWells.length){
+      const GR=2500, GR2=GR*GR;
+      for(const w of state.gravWells){
+        for(const id in state.players){
+          const p=state.players[id];
+          if(!p.alive || p.docked) continue;
+          const dx=w.x-p.x, dy=w.y-p.y;
+          const d2=dx*dx+dy*dy;
+          if(d2<900 || d2>GR2) continue;
+          const d=Math.sqrt(d2);
+          const a=w.strength/d2;
+          p.vx+=dx/d*a; p.vy+=dy/d*a;
+        }
+        for(const a of state.asteroids){
+          const dx=w.x-a.x, dy=w.y-a.y;
+          const d2=dx*dx+dy*dy;
+          if(d2<900 || d2>GR2) continue;
+          const d=Math.sqrt(d2);
+          const acc=w.strength/d2;
+          a.vx+=dx/d*acc; a.vy+=dy/d*acc;
+        }
+        for(const b of state.bullets){
+          const dx=w.x-b.x, dy=w.y-b.y;
+          const d2=dx*dx+dy*dy;
+          if(d2<400 || d2>GR2) continue;
+          const d=Math.sqrt(d2);
+          const acc=w.strength/d2;
+          b.vx+=dx/d*acc; b.vy+=dy/d*acc;
+        }
+      }
+    }
+
+    // platform proximity
+    state.nearPlatform=null;
+    if(me){
+      for(const pl of state.platforms){
+        if(Math.hypot(me.x-pl.x,me.y-pl.y)<pl.r+30){ state.nearPlatform=pl; break; }
+      }
+    }
+    if(!state.nearPlatform && state.docked){
+      // drifted out of safe range while AFK — eject from hub UI
+      state.docked=false; state.selectedCell=null; state.gunPopover=null;
+      document.getElementById('hub').style.display='none';
+      document.getElementById('dockBtn').classList.remove('active');
+      document.getElementById('topbar').style.display='';
+      document.getElementById('hud').style.display='';
+      document.getElementById('peers').style.display='';
+      if(state.showMap) document.getElementById('minimap').style.display='block';
+    }
+
+    // keep asteroid count up (any peer locally tops it up; harmless mismatch ok)
+    if(state.asteroids.length<600){
+      const a=spawnAsteroid();
+      let bad=false;
+      for(const pl of state.platforms){ if(Math.hypot(a.x-pl.x,a.y-pl.y)<pl.r+PLATFORM_DEFENSE+a.r){ bad=true; break; } }
+      if(!bad){ state.asteroids.push(a); Net.broadcast({kind:'ast_sync',a}); }
+    }
+
+    // pending vote timeout
+    if(state.pendingVote && performance.now()>state.pendingVote.deadline){
+      document.getElementById('vote').style.display='none';
+      state.pendingVote=null;
+    }
+
+    if(me) revealAround(me.x,me.y);
+
+    stepPickups();
+    stepTraderDock();
+    stepPings();
+    stepRace();
+
+    // sync me
+    state.tick++;
+    if(me) me.docked=state.docked;
+    // ping probe every 2 seconds (only if we have peers)
+    if(state.tick%120===0 && Object.keys(Net.peers).length>0){
+      Net.broadcast({kind:'rtt_ping', t:performance.now()});
+    }
+    if(state.tick%3===0 && me){
+      Net.broadcast({kind:'state',name:state.me.name,x:me.x,y:me.y,vx:me.vx,vy:me.vy,rot:me.rot,hp:me.hp,maxHp:me.maxHp,team:me.team,alive:me.alive,docked:state.docked,grace:me.grace>0,thrusting:!!me.thrusting,checkpoint:me.checkpoint||0,lap:me.lap||0});
+      for(const aid of state.aiIds){
+        const b=state.players[aid]; if(!b) continue;
+        Net.broadcastAs(aid,{kind:'state',name:b.name,x:b.x,y:b.y,vx:b.vx,vy:b.vy,rot:b.rot,hp:b.hp,maxHp:b.maxHp,team:b.team,alive:b.alive,grace:b.grace>0,thrusting:!!b.thrusting});
+      }
+      for(const pid of state.pirateIds){
+        const b=state.players[pid]; if(!b) continue;
+        Net.broadcastAs(pid,{kind:'state',name:b.name,x:b.x,y:b.y,vx:b.vx,vy:b.vy,rot:b.rot,hp:b.hp,maxHp:b.maxHp,team:b.team,alive:b.alive,grace:b.grace>0,thrusting:!!b.thrusting,pirate:true,king:!!b.king});
+      }
+      for(const tid of state.traderIds){
+        const b=state.players[tid]; if(!b) continue;
+        Net.broadcastAs(tid,{kind:'state',name:b.name,x:b.x,y:b.y,vx:b.vx,vy:b.vy,rot:b.rot,hp:b.hp,maxHp:b.maxHp,team:b.team,alive:b.alive,grace:b.grace>0,thrusting:!!b.thrusting,trader:true});
+      }
+    }
+  }
+
+  const TEAM_COLORS=[
+    [0.5,1.0,0.5], // 1 green
+    [1.0,0.5,0.5], // 2 red
+    [0.5,0.7,1.0], // 3 blue
+    [1.0,0.5,1.0], // 4 magenta
+    [1.0,0.85,0.4],// 5 orange
+  ];
+  function teamColor(t,isMe){
+    if(t>=1 && t<=5) return TEAM_COLORS[t-1];
+    return isMe?[0.6,0.9,1]:[1,1,0.7]; // neutral: self pale blue, others pale yellow
+  }
+  function teamCssColor(t){
+    if(t>=1 && t<=5){ const c=TEAM_COLORS[t-1]; return `rgb(${Math.round(c[0]*255)},${Math.round(c[1]*255)},${Math.round(c[2]*255)})`; }
+    return '#ffb';
+  }
+
+  /* -------- Rendering build -------- */
+  function buildScene(){
+    const me=state.players[state.me.id];
+    const cx=me?me.x:0, cy=me?me.y:0;
+    Renderer.setCam(cx,cy,1);
+
+    const stars=new Float32Array(state.stars.length*8);
+    for(let i=0;i<state.stars.length;i++){
+      const s=state.stars[i];
+      // parallax-ish
+      stars[i*8]=s.x*0.5+cx*0.5; stars[i*8+1]=s.y*0.5+cy*0.5;
+      stars[i*8+2]=s.r; stars[i*8+3]=0;
+      stars[i*8+4]=0.4;stars[i*8+5]=0.5;stars[i*8+6]=0.6;stars[i*8+7]=1;
+    }
+    const myStats=me?shipStats(me):null;
+    const hasScanner=myStats && myStats.scanner>0;
+    const unknown=[0.45,0.45,0.45];
+    const ast=new Float32Array(state.asteroids.length*8);
+    for(let i=0;i<state.asteroids.length;i++){
+      const a=state.asteroids[i];
+      ast[i*8]=a.x; ast[i*8+1]=a.y; ast[i*8+2]=a.r; ast[i*8+3]=a.rot;
+      const c=hasScanner?matColor(a.mat):unknown;
+      ast[i*8+4]=c[0]; ast[i*8+5]=c[1]; ast[i*8+6]=c[2]; ast[i*8+7]=1;
+    }
+    const ships=[];
+    const pulseT=performance.now()*0.005;
+    for(const id in state.players){
+      const p=state.players[id]; if(!p.alive) continue;
+      if(p.docked){
+        const pulse=0.6+0.4*Math.sin(pulseT);
+        ships.push(p.x,p.y,30+pulse*4,p.rot,1.0*pulse,0.5*pulse,0.05,1);
+      } else if(p.grace>0){
+        const pulse=0.6+0.4*Math.sin(pulseT*1.4);
+        ships.push(p.x,p.y,28+pulse*3,p.rot,1.0*pulse,0.9*pulse,0.25*pulse,1);
+      } else if(p.shield>0 && p.shieldMax>0){
+        // cyan shield aura — intensity scales with current shield %
+        const k=p.shield/p.shieldMax;
+        ships.push(p.x,p.y,24+k*4,p.rot, 0.1*k, 0.5*k, 0.95*k, 1);
+      }
+      if(p.thrusting && !p.docked){
+        // flame behind ship (smaller triangle pointing away, flickering size + color)
+        const cosR=Math.cos(p.rot), sinR=Math.sin(p.rot);
+        const fx=p.x - cosR*14;
+        const fy=p.y - sinR*14;
+        const flick=0.7+Math.random()*0.6;
+        ships.push(fx,fy, 8*flick, p.rot+Math.PI,
+          1.0, 0.5+0.25*Math.random(), 0.10+0.1*Math.random(), 1);
+      }
+      let c, shipScale=18;
+      if(p.king){ c=[0.95,0.2,0.7]; shipScale=32; }       // pirate king: magenta, big
+      else if(p.pirate) c=[0.85,0.2,0.1];                  // pirates: ominous red-orange
+      else if(p.trader) c=[0.4,0.85,0.8];                  // traders: pale teal
+      else c=teamColor(p.team,id===state.me.id);
+      if(p.hitFlash>0){
+        // tint toward red while flash counter is positive
+        const t=Math.min(1, p.hitFlash/8);
+        c=[c[0]*(1-t)+1.0*t, c[1]*(1-t)+0.15*t, c[2]*(1-t)+0.15*t];
+        p.hitFlash--;
+      }
+      ships.push(p.x,p.y,shipScale,p.rot,c[0],c[1],c[2],1);
+    }
+    const bulCount=state.bullets.length+state.pickups.length;
+    const bul=new Float32Array(bulCount*8);
+    for(let i=0;i<state.bullets.length;i++){
+      const b=state.bullets[i];
+      bul[i*8]=b.x; bul[i*8+1]=b.y; bul[i*8+2]=3; bul[i*8+3]=Math.atan2(b.vy,b.vx);
+      bul[i*8+4]=1;bul[i*8+5]=1;bul[i*8+6]=0.4;bul[i*8+7]=1;
+    }
+    // pickups rendered as larger spinning magenta diamonds
+    const off=state.bullets.length;
+    for(let i=0;i<state.pickups.length;i++){
+      const pk=state.pickups[i];
+      const j=off+i;
+      bul[j*8]=pk.x; bul[j*8+1]=pk.y; bul[j*8+2]=8; bul[j*8+3]=pk.rot;
+      bul[j*8+4]=0.9;bul[j*8+5]=0.3;bul[j*8+6]=1.0;bul[j*8+7]=1;
+    }
+    const plat=new Float32Array(state.platforms.length*16 + state.gravWells.length*16);
+    const tNow=performance.now()*0.0005;
+    for(let i=0;i<state.platforms.length;i++){
+      const pl=state.platforms[i];
+      // safe-zone halo (drawn first, sits behind platform)
+      plat[i*16]=pl.x; plat[i*16+1]=pl.y; plat[i*16+2]=pl.r+PLATFORM_DEFENSE; plat[i*16+3]=tNow*0.3;
+      plat[i*16+4]=0.06;plat[i*16+5]=0.14;plat[i*16+6]=0.28;plat[i*16+7]=1;
+      // platform itself
+      plat[i*16+8]=pl.x; plat[i*16+9]=pl.y; plat[i*16+10]=pl.r; plat[i*16+11]=tNow;
+      plat[i*16+12]=0.2;plat[i*16+13]=0.4;plat[i*16+14]=0.8;plat[i*16+15]=1;
+    }
+    // gravity wells: bright outer octagon + counter-rotating dark core — clearly NOT an asteroid
+    const wellOff=state.platforms.length*2;
+    for(let i=0;i<state.gravWells.length;i++){
+      const gw=state.gravWells[i];
+      const j1=(wellOff+i*2)*8;
+      plat[j1]=gw.x; plat[j1+1]=gw.y; plat[j1+2]=110+Math.sin(tNow*2+i)*6; plat[j1+3]=tNow*1.5;
+      plat[j1+4]=0.85; plat[j1+5]=0.25; plat[j1+6]=0.95; plat[j1+7]=1;
+      const j2=(wellOff+i*2+1)*8;
+      plat[j2]=gw.x; plat[j2+1]=gw.y; plat[j2+2]=55; plat[j2+3]=-tNow*3;
+      plat[j2+4]=0.02; plat[j2+5]=0.0; plat[j2+6]=0.06; plat[j2+7]=1;
+    }
+    Renderer.frame({stars,asteroids:ast,ships:new Float32Array(ships),bullets:bul,platforms:plat});
+  }
+
+  function matColor(m){return ({iron:[0.7,0.6,0.5],silicon:[0.6,0.7,0.8],carbon:[0.4,0.4,0.4],rare:[0.9,0.4,0.9]})[m]||[0.7,0.7,0.7];}
+
+  /* -------- HUD -------- */
+  function updateHud(){
+    const me=state.players[state.me.id];
+    const h=document.getElementById('hud');
+    if(!me){h.textContent='';return;}
+    h.innerHTML=
+      `<b>${esc(state.me.name)}</b> [team ${me.team}]<br>`+
+      `HP: ${Math.max(0,Math.round(me.hp))}/${me.maxHp}`+
+      (me.shieldMax>0?` · <span style="color:#7df">Shield ${Math.round(me.shield)}/${me.shieldMax}</span>`:'')+'<br>'+
+      (me.boostMax>0?`<span style="color:#fd9">Boost ${Math.round(me.boost)}/${me.boostMax}</span><br>`:'')+
+      `<span style="color:${me.overheated?'#f55':me.heat>70?'#fa6':'#8ef'}">Heat ${Math.round(me.heat||0)}${me.overheated?' OVERHEATED':''}</span><br>`+
+      `Credits: ${me.creds||0}<br>`+
+      `Iron ${me.materials.iron} | Si ${me.materials.silicon} | C ${me.materials.carbon} | Rare ${me.materials.rare}<br>`+
+      `K/D: ${me.kills||0}/${me.deaths||0}`+
+      (state.nearPlatform?'<br><span style="color:#5f8">⚓ at a hub — tap Dock</span>':'');
+    // live leaderboard
+    const pp=document.getElementById('peers');
+    let s='';
+    if(state.gameMode==='race'){
+      const racers=Object.values(state.players).filter(p=>!p.pirate && !p.trader);
+      // sort: lap desc, checkpoint desc, distance asc
+      racers.forEach(p=>{
+        const cpIdx=(p.checkpoint||0)%state.raceCheckpoints.length;
+        const cp=state.raceCheckpoints[cpIdx];
+        p._dToCp = cp?Math.hypot(p.x-cp.x,p.y-cp.y):0;
+      });
+      racers.sort((a,b)=>{
+        if((b.lap||0)!==(a.lap||0)) return (b.lap||0)-(a.lap||0);
+        if((b.checkpoint||0)!==(a.checkpoint||0)) return (b.checkpoint||0)-(a.checkpoint||0);
+        return (a._dToCp||0)-(b._dToCp||0);
+      });
+      s='<div class="title">Race · '+state.raceLaps+' lap'+(state.raceLaps>1?'s':'')+'</div>';
+      racers.forEach((p,i)=>{
+        const cls=(i===0&&racers.length>1)?'lead':(p.id===state.me.id?'you':'');
+        const finished = state.raceFinishOrder.includes(p.id);
+        const tag = finished?(' 🏁 #'+(state.raceFinishOrder.indexOf(p.id)+1)):'';
+        const ping = state.pingTo[p.id];
+        const pingStr = (p.id===state.me.id || ping===undefined) ? '' :
+          ` <span style="color:${ping<100?'#7f7':ping<300?'#fd6':'#f88'};font-size:10px">${ping}ms</span>`;
+        s+=`<div class="${cls}">${esc(p.name||p.id.slice(0,6))}${pingStr}: L${(p.lap||0)+1}/${state.raceLaps} cp${(p.checkpoint||0)+1}/${state.raceCheckpoints.length}${tag}</div>`;
+      });
+    } else {
+      const groups={};
+      for(const id in state.players){
+        const p=state.players[id];
+        if(p.pirate || p.trader) continue;
+        const key=p.team===0?('p_'+id):('t_'+p.team);
+        const label=p.team===0?p.name:('Team '+p.team);
+        if(!groups[key]) groups[key]={label,kills:0,hasMe:false,pingId:p.team===0?id:null,worstPing:0};
+        groups[key].kills+=p.kills||0;
+        if(id===state.me.id) groups[key].hasMe=true;
+        if(id!==state.me.id && state.pingTo[id]!==undefined){
+          if(state.pingTo[id]>groups[key].worstPing) groups[key].worstPing=state.pingTo[id];
+        }
+      }
+      const arr=Object.values(groups).sort((a,b)=>b.kills-a.kills);
+      s='<div class="title">Scores'+(state.killGoal?' (goal '+state.killGoal+')':'')+'</div>';
+      arr.forEach((g,i)=>{
+        const cls=(i===0&&arr.length>1)?'lead':(g.hasMe?'you':'');
+        const ping = g.pingId ? state.pingTo[g.pingId] : (g.worstPing||undefined);
+        const pingStr = (g.hasMe || ping===undefined) ? '' :
+          ` <span style="color:${ping<100?'#7f7':ping<300?'#fd6':'#f88'};font-size:10px">${ping}ms</span>`;
+        s+=`<div class="${cls}">${esc(g.label)}${pingStr}: ${g.kills}${i===0&&arr.length>1?' ★':''}</div>`;
+      });
+    }
+    pp.innerHTML=s;
+  }
+  function esc(s){return (s+'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));}
+
+  /* -------- Kill feed (transient alerts; not in chat) -------- */
+  function killFeed(text, kind){
+    const fc=document.getElementById('killfeed');
+    if(!fc) return;
+    const div=document.createElement('div');
+    if(kind) div.className=kind;
+    div.textContent=text;
+    fc.appendChild(div);
+    while(fc.children.length>6) fc.removeChild(fc.firstChild);
+    setTimeout(()=>div.remove(), 4800);
+  }
+
+  /* -------- Trade -------- */
+  const ITEMS={
+    hull:{name:'Hull cell',cost:{iron:2},credits:5},
+    armor:{name:'Armor cell',cost:{iron:5},credits:15},
+    engine:{name:'Engine',cost:{iron:3,silicon:2},credits:25},
+    gun_basic:{name:'Basic gun',cost:{iron:4,silicon:2},credits:30,gunVariant:'basic'},
+    gun_heavy:{name:'Heavy gun',cost:{iron:8,silicon:4,carbon:2},credits:80,gunVariant:'heavy'},
+    gun_laser:{name:'Laser gun',cost:{silicon:6,rare:2},credits:120,gunVariant:'laser'},
+    radar:{name:'Radar',cost:{silicon:4,rare:1},credits:60},
+    scanner:{name:'Material scanner',cost:{silicon:3,carbon:2},credits:50},
+    repair:{name:'Repair module',cost:{iron:5,silicon:3,carbon:1},credits:70},
+    shield:{name:'Shield generator',cost:{silicon:5,rare:1},credits:80},
+    coolant:{name:'Coolant module',cost:{silicon:3,carbon:2},credits:55},
+  };
+  const PRICES={iron:2,silicon:3,carbon:4,rare:15};
+  function renderTrade(){
+    const me=state.players[state.me.id]; if(!me) return;
+    const b=document.getElementById('tradeBody');
+    const dmg=Math.max(0,Math.ceil(me.maxHp-me.hp));
+    let h='';
+    h+=`<div class="row" style="font-size:15px;padding:6px 8px;background:#012;border:1px solid #2af;border-radius:4px">
+      <b>Credits: ${me.creds||0}</b>
+      <span class="dim">·</span> Iron ${me.materials.iron} <span class="dim">·</span> Si ${me.materials.silicon} <span class="dim">·</span> C ${me.materials.carbon} <span class="dim">·</span> Rare ${me.materials.rare}
+    </div>`;
+    h+=`<div class="row"><b>Repair</b> ${Math.round(me.hp)}/${me.maxHp} `;
+    if(dmg>0){
+      h+=`<button onclick="Game.repairHub(1)">Repair 1 (1cr)</button> `;
+      h+=`<button onclick="Game.repairHub(${dmg})">Repair full (${dmg}cr)</button>`;
+    } else { h+='<span class="dim">at full HP</span>'; }
+    h+='</div><hr>';
+    h+='<div class="row"><b>Sell materials</b></div>';
+    for(const m of ['iron','silicon','carbon','rare']){
+      h+=`<div class="row">${m}: ${me.materials[m]} <button onclick="Game.sellMat('${m}',1)">Sell 1 (+${PRICES[m]})</button> <button onclick="Game.sellMat('${m}',10)">Sell 10</button></div>`;
+    }
+    h+='<hr><div class="row"><b>Buy items</b> (add to inventory; place in builder)</div>';
+    for(const k in ITEMS){
+      const it=ITEMS[k];
+      const cost=Object.entries(it.cost).map(([m,n])=>n+' '+m).join(' + ')+' or '+it.credits+'cr';
+      h+=`<div class="row">${it.name} <span class="dim">(${cost})</span> <button onclick="Game.buyItem('${k}','mat')">Mat</button> <button onclick="Game.buyItem('${k}','cr')">Credits</button></div>`;
+    }
+    h+='<hr><div class="row"><b>Inventory:</b> '+(me.inventory?Object.entries(me.inventory).filter(([k,v])=>v>0).map(([k,v])=>itemName(k)+' ×'+v).join(', ')||'(empty)':'(empty)')+'</div>';
+    b.innerHTML=h;
+  }
+  function itemName(k){
+    if(UNIQUE_ITEMS[k]) return UNIQUE_ITEMS[k].name;
+    if(RACE_CONSUMABLES[k]) return RACE_CONSUMABLES[k].name;
+    if(ITEMS[k]) return ITEMS[k].name;
+    return k;
+  }
+  function repairHub(n){
+    const me=state.players[state.me.id]; if(!me) return;
+    if(!state.nearPlatform) return;
+    const need=Math.max(0,Math.ceil(me.maxHp-me.hp));
+    n=Math.min(n,need,me.creds||0);
+    if(n<=0) return;
+    me.creds-=n; me.hp=Math.min(me.maxHp,me.hp+n);
+    renderHub();
+  }
+  function sellMat(m,n){
+    const me=state.players[state.me.id];
+    n=Math.min(n,me.materials[m]);
+    if(n<=0) return;
+    me.materials[m]-=n; me.creds=(me.creds||0)+n*PRICES[m];
+    renderHub();
+  }
+  function buyItem(k,how){
+    const me=state.players[state.me.id]; const it=ITEMS[k];
+    if(how==='cr'){
+      if((me.creds||0)<it.credits){ chatLine('not enough credits'); return; }
+      me.creds-=it.credits;
+    } else {
+      for(const [m,n] of Object.entries(it.cost)) if((me.materials[m]||0)<n){ chatLine('not enough '+m); return; }
+      for(const [m,n] of Object.entries(it.cost)) me.materials[m]-=n;
+    }
+    me.inventory=me.inventory||{};
+    me.inventory[k]=(me.inventory[k]||0)+1;
+    renderHub();
+  }
+
+  function renderHub(){
+    if(!document.getElementById('tradeBody')) return;
+    renderTrade();
+    renderBuilder();
+  }
+
+  /* -------- Lobby ship builder (creative mode) -------- */
+  const LOBBY_PLACEABLE=['hull','armor','engine','radar','scanner','repair','shield','coolant','gun_basic','gun_heavy','gun_laser',
+                         'ion_engine','heavy_armor','quad_gun','long_radar','plasma_gun'];
+  function ensureLobbyLayout(){
+    if(!state.lobby.layout) state.lobby.layout=makeShipLayout();
+  }
+  function renderLobbyBuilder(){
+    ensureLobbyLayout();
+    const el=document.getElementById('lobbyBuilderBody'); if(!el) return;
+    const L=state.lobby;
+    let h='';
+    if(L.gunPopover){
+      const gx=L.gunPopover.x, gy=L.gunPopover.y;
+      const gp=L.layout[gy]?.[gx];
+      const arrows=['→','↗','↑','↖','←','↙','↓','↘'];
+      if(gp && gp.type==='gun'){
+        const aim=((gp.aim||0)+Math.PI*2)%(Math.PI*2);
+        const idx=Math.round(aim/(Math.PI/4))%8;
+        h+=`<div class="row" style="border:2px solid #fd6;padding:6px;border-radius:5px;background:#022;margin-bottom:6px">
+          <b style="color:#fd6">Gun (${gp.variant}) ${arrows[idx]}</b>
+          <button onclick="Game.lobbyGunCfg('rot')">↻</button>
+          <button class="${gp.auto?'active':''}" onclick="Game.lobbyGunCfg('auto')">Auto:${gp.auto?'on':'off'}</button>
+          <button onclick="Game.lobbyGunCfg('multi')">×${gp.multi||1}</button>
+          <button class="bad" onclick="Game.lobbyGunCfg('remove')">Remove</button>
+          <button onclick="Game.lobbyGunCfg('close')">Close</button>
+        </div>`;
+      } else { L.gunPopover=null; }
+    }
+    h+='<div class="row" style="font-size:11px"><b>Place:</b> ';
+    for(const k of LOBBY_PLACEABLE){
+      const lbl = (UNIQUE_ITEMS[k]?UNIQUE_ITEMS[k].name : (ITEMS[k]?ITEMS[k].name : k))
+        .replace(/ cell$/,'').replace(/ module$/,'').replace(/-range/,'-rng');
+      h+=`<button class="${L.placeMode===k?'active':''}" style="padding:3px 6px;min-height:0;font-size:11px" onclick="Game.lobbySetPlace('${k}')" title="${k}">${lbl}</button> `;
+    }
+    h+=`<button class="${L.placeMode==='__move'?'active':''}" style="padding:3px 6px;min-height:0;font-size:11px" onclick="Game.lobbySetPlace('__move')">⟷ move</button> `;
+    h+=`<button class="${L.placeMode==='__remove'?'active':''}" style="padding:3px 6px;min-height:0;font-size:11px" onclick="Game.lobbySetPlace('__remove')">🗑 remove</button> `;
+    if(L.placeMode) h+=`<button style="padding:3px 6px;min-height:0;font-size:11px" onclick="Game.lobbySetPlace(null)">Done</button>`;
+    h+='</div>';
+    const cellSize=28;
+    h+=`<div class="grid" style="grid-template-columns:repeat(9,${cellSize}px);grid-auto-rows:${cellSize}px;font-size:${Math.floor(cellSize*0.55)}px">`;
+    const arrows=['→','↗','↑','↖','←','↙','↓','↘'];
+    for(let y=0;y<9;y++){
+      for(let x=0;x<9;x++){
+        const c=L.layout[y][x];
+        let cls=c?('cell '+c.type):'cell';
+        let lbl=c?c.type[0].toUpperCase():'';
+        if(c && c.type==='gun'){
+          const aim=((c.aim||0)+Math.PI*2)%(Math.PI*2);
+          const idx=Math.round(aim/(Math.PI/4))%8;
+          lbl=arrows[idx];
+        }
+        if(L.selectedCell && L.selectedCell.x===x && L.selectedCell.y===y) cls+=' sel';
+        if(L.gunPopover && L.gunPopover.x===x && L.gunPopover.y===y) cls+=' swap';
+        h+=`<div class="${cls}" onclick="Game.lobbyBuilderClick(event,${x},${y})">${lbl}</div>`;
+      }
+    }
+    h+='</div>';
+    const s=shipStats({layout:L.layout});
+    const cost=layoutCost(L.layout);
+    const costStr=Object.entries(cost).filter(([m,n])=>n>0).map(([m,n])=>n+m[0].toUpperCase()).join(' ')||'free';
+    h+=`<div class="row dim" style="font-size:11px">HP ${s.maxHp} · mass ${s.mass} · engines ${s.engines} · thrust ${s.thrust.toFixed(3)} · turn ${s.turn.toFixed(3)} · guns ${s.guns.length} · cost ${costStr}</div>`;
+    h+='<div class="row"><button onclick="Game.lobbySaveDesign()">💾 Save to library</button> <button onclick="Game.lobbyResetDesign()">Reset</button></div>';
+    el.innerHTML=h;
+  }
+  function lobbySetPlace(k){ state.lobby.placeMode=k; state.lobby.selectedCell=null; state.lobby.gunPopover=null; renderLobbyBuilder(); }
+  function lobbyBuilderClick(ev,x,y){
+    ensureLobbyLayout();
+    const L=state.lobby;
+    const c=L.layout[y][x];
+    if(L.placeMode==='__move'){
+      if(!L.selectedCell){
+        if(!c || c.type==='core') return;
+        L.selectedCell={x,y}; renderLobbyBuilder(); return;
+      }
+      const from=L.selectedCell; L.selectedCell=null;
+      if(from.x===x && from.y===y){ renderLobbyBuilder(); return; }
+      const dst=L.layout[y][x];
+      if(dst && dst.type==='core'){ renderLobbyBuilder(); return; }
+      const src=L.layout[from.y][from.x];
+      L.layout[y][x]=src; L.layout[from.y][from.x]=dst;
+      if(!isConnected(L.layout)){ L.layout[from.y][from.x]=src; L.layout[y][x]=dst; }
+      renderLobbyBuilder(); return;
+    }
+    if(L.placeMode==='__remove'){
+      if(!c || c.type==='core') return;
+      if(c.type==='hull'){
+        L.layout[y][x]=null;
+        if(!isConnected(L.layout)){ L.layout[y][x]=c; renderLobbyBuilder(); return; }
+      }
+      else { L.layout[y][x]={type:'hull'}; }
+      renderLobbyBuilder(); return;
+    }
+    if(L.placeMode){
+      if(L.placeMode==='hull'){
+        if(c) return;
+        const adj=[[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>L.layout[y+dy]?.[x+dx]);
+        if(!adj) return;
+        L.layout[y][x]={type:'hull'};
+      } else {
+        if(!c || c.type!=='hull') return;
+        let type=L.placeMode;
+        const opts={};
+        const uniq=UNIQUE_ITEMS[L.placeMode];
+        if(uniq){
+          type=uniq.baseType;
+          opts.unique=L.placeMode;
+          if(type==='gun'){ opts.variant=uniq.variant||'basic'; opts.aim=0; opts.auto=false; opts.multi=L.placeMode==='quad_gun'?4:1; }
+        } else {
+          const it=ITEMS[L.placeMode];
+          if(L.placeMode.startsWith('gun_')){ type='gun'; opts.variant=it.gunVariant; opts.aim=0; opts.auto=false; opts.multi=1; }
+        }
+        L.layout[y][x]={type,...opts};
+      }
+      renderLobbyBuilder(); return;
+    }
+    if(c && c.type==='gun'){ L.gunPopover={x,y}; } else { L.gunPopover=null; }
+    renderLobbyBuilder();
+  }
+  function lobbyGunCfg(action){
+    const L=state.lobby; if(!L.gunPopover) return;
+    const {x,y}=L.gunPopover;
+    const c=L.layout[y][x]; if(!c || c.type!=='gun') return;
+    if(action==='rot'){
+      c.aim=((c.aim||0)+Math.PI/4);
+      c.aim=((c.aim+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI;
+    } else if(action==='auto'){ c.auto=!c.auto; }
+    else if(action==='multi'){ c.multi=(c.multi||1)+1; if(c.multi>3) c.multi=1; }
+    else if(action==='remove'){ L.layout[y][x]={type:'hull'}; L.gunPopover=null; }
+    else if(action==='close'){ L.gunPopover=null; }
+    renderLobbyBuilder();
+  }
+  function lobbySaveDesign(){
+    ensureLobbyLayout();
+    const h=layoutHash(state.lobby.layout);
+    if(state.shipLibrary.some(d=>d.hash===h)){ alert('That design is already in the library.'); return; }
+    const design={layout:cloneLayout(state.lobby.layout),cost:layoutCost(state.lobby.layout),hash:h,author:document.getElementById('pname').value||'me'};
+    state.shipLibrary.push(design);
+    while(state.shipLibrary.length>40) state.shipLibrary.shift();
+    saveLibrary();
+    renderLobbyLibrary();
+  }
+  function lobbyResetDesign(){
+    state.lobby.layout=makeShipLayout();
+    state.lobby.placeMode=null; state.lobby.selectedCell=null; state.lobby.gunPopover=null;
+    renderLobbyBuilder();
+  }
+  function lobbyLoadDesign(idx){
+    const d=state.shipLibrary[idx]; if(!d) return;
+    state.lobby.layout=cloneLayout(d.layout);
+    state.lobby.placeMode=null; state.lobby.selectedCell=null; state.lobby.gunPopover=null;
+    renderLobbyBuilder();
+  }
+  function renderLobbyLibrary(){
+    const el=document.getElementById('lobbyLibraryBody'); if(!el) return;
+    let h='';
+    if(state.shipLibrary.length===0){
+      h='<div class="dim" style="font-size:11px">No designs saved yet. Build one on the right and click Save.</div>';
+    } else {
+      for(let i=state.shipLibrary.length-1;i>=0;i--){
+        const d=state.shipLibrary[i];
+        const costStr=Object.entries(d.cost).filter(([m,n])=>n>0).map(([m,n])=>n+m[0].toUpperCase()).join(' ')||'free';
+        h+=`<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;padding:5px;border:1px solid #234;border-radius:4px;background:rgba(8,16,24,0.5)">
+          ${miniLayoutHtml(d.layout)}
+          <div style="flex:1;font-size:11px;line-height:1.4;min-width:0">
+            <div>#${i+1} ${esc(d.author||'?')}</div>
+            <div class="dim">${costStr}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:3px">
+            <button style="padding:3px 6px;min-height:0;font-size:11px" onclick="Game.lobbyLoadDesign(${i})">Load</button>
+            <button class="bad" style="padding:3px 6px;min-height:0;font-size:11px" onclick="Game.deleteDesign(${i})">✕</button>
+          </div>
+        </div>`;
+      }
+    }
+    el.innerHTML=h;
+  }
+
+  /* -------- Builder -------- */
+  let placeMode=null; // string item key, or '__move'/'__remove', or null
+  const CELL_BG={core:'#a82',hull:'#345',armor:'#664',gun:'#622',engine:'#262',radar:'#246',scanner:'#426',repair:'#484'};
+  function miniLayoutHtml(layout){
+    let h='<div style="display:grid;grid-template-columns:repeat(9,6px);grid-auto-rows:6px;gap:1px;background:#234;padding:1px;border-radius:2px;flex:0 0 auto">';
+    for(let y=0;y<9;y++)for(let x=0;x<9;x++){
+      const c=layout[y][x];
+      const bg=c?(CELL_BG[c.type]||'#012'):'#012';
+      h+=`<div style="background:${bg}"></div>`;
+    }
+    h+='</div>';
+    return h;
+  }
+  function canAfford(me,cost){
+    for(const m in cost) if((me.materials[m]||0)<cost[m]) return false;
+    return true;
+  }
+  function applyDesign(idx){
+    const me=state.players[state.me.id]; if(!me) return;
+    const d=state.shipLibrary[idx]; if(!d) return;
+    if(!canAfford(me,d.cost)){ chatLine('not enough materials for that design'); return; }
+    for(const m in d.cost) me.materials[m]-=d.cost[m];
+    me.layout=cloneLayout(d.layout);
+    const s=shipStats(me); me.maxHp=s.maxHp; me.shieldMax=s.shieldMax; me.boostMax=s.boostCap;
+    me.hp=Math.min(me.maxHp,me.hp);
+    me.shield=me.shieldMax; // refit gives full shield
+    me.boost=me.boostMax;
+    chatLine('* applied design #'+(idx+1));
+    renderHub();
+  }
+  function deleteDesign(idx){
+    const d=state.shipLibrary[idx]; if(!d) return;
+    state.shipLibrary.splice(idx,1);
+    saveLibrary();
+    if(state.docked) renderHub();
+    renderLobbyLibrary();
+  }
+  function renderBuilder(){
+    const me=state.players[state.me.id]; if(!me) return;
+    const b=document.getElementById('builderBody');
+    let h='';
+    // gun popover (shown at top so it's always visible)
+    if(state.gunPopover){
+      const gx=state.gunPopover.x, gy=state.gunPopover.y;
+      const gp=me.layout[gy]?.[gx];
+      const arrowsP=['→','↗','↑','↖','←','↙','↓','↘'];
+      if(gp && gp.type==='gun'){
+        const aimP=((gp.aim||0)+Math.PI*2)%(Math.PI*2);
+        const idxP=Math.round(aimP/(Math.PI/4))%8;
+        h+=`<div class="row" style="border:2px solid #fd6;padding:8px;border-radius:5px;background:#022;margin-bottom:8px">
+          <b style="color:#fd6">Gun @ (${gx},${gy}) — ${gp.variant} ${arrowsP[idxP]}</b>
+          <button onclick="Game.gunCfg('rot')">Rotate aim ↻</button>
+          <button class="${gp.auto?'active':''}" onclick="Game.gunCfg('auto')">Auto: ${gp.auto?'on':'off'}</button>
+          <button onclick="Game.gunCfg('multi')">Multi: ×${gp.multi||1}</button>
+          <button class="bad" onclick="Game.gunCfg('remove')">Remove module</button>
+          <button onclick="Game.gunCfg('close')">Close</button>
+        </div>`;
+      } else {
+        state.gunPopover=null;
+      }
+    }
+    h+='<div class="row dim">Hull on empty (must be adjacent to ship). Modules on hull cells. Tap a gun for its config.</div>';
+    h+='<div class="row"><b>Place:</b> ';
+    const inv=me.inventory||{};
+    for(const k in inv){ if(inv[k]>0) h+=`<button class="${placeMode===k?'active':''}" onclick="Game.setPlace('${k}')" title="${k}">${itemName(k)} ×${inv[k]}</button> `; }
+    h+=`<button class="${placeMode==='__move'?'active':''}" onclick="Game.setPlace('__move')">⟷ Move</button> `;
+    h+=`<button class="${placeMode==='__remove'?'active':''}" onclick="Game.setPlace('__remove')">🗑 Remove</button> `;
+    if(placeMode) h+=`<button onclick="Game.setPlace(null)">Done</button>`;
+    h+='</div>';
+    const cellSize=state.touchUI?44:36;
+    h+=`<div class="grid" style="grid-template-columns:repeat(9,${cellSize}px);grid-auto-rows:${cellSize}px;font-size:${Math.floor(cellSize*0.55)}px">`;
+    const arrows=['→','↗','↑','↖','←','↙','↓','↘'];
+    const sel=state.selectedCell;
+    for(let y=0;y<9;y++){
+      for(let x=0;x<9;x++){
+        const c=me.layout[y][x];
+        let cls=c?('cell '+c.type):'cell';
+        let lbl=c?c.type[0].toUpperCase():'';
+        if(c && c.type==='gun'){
+          const aim=((c.aim||0)+Math.PI*2)%(Math.PI*2);
+          const idx=Math.round(aim/(Math.PI/4))%8;
+          lbl=arrows[idx];
+        }
+        if(sel && sel.x===x && sel.y===y) cls+=' sel';
+        if(state.gunPopover && state.gunPopover.x===x && state.gunPopover.y===y) cls+=' swap';
+        h+=`<div class="${cls}" onclick="Game.builderClick(event,${x},${y})">${lbl}</div>`;
+      }
+    }
+    h+='</div>';
+    const s=shipStats(me);
+    h+=`<div class="row">HP ${me.hp.toFixed(0)}/${s.maxHp}${s.shieldMax?' · shield '+s.shieldMax:''} · mass ${s.mass} · engines ${s.engines}${s.boostCap?' (boost '+s.boostCap+')':''} · thrust ${s.thrust.toFixed(3)} · turn ${s.turn.toFixed(3)} · guns ${s.guns.length} · heat max ${s.maxHeat}${s.coolant?' (coolant ×'+s.coolant+')':''} · repair ×${s.repair||0} · radar ×${s.radar||0}${s.radar?' ('+s.radarRange+'u)':''} · scanner ×${s.scanner||0}</div>`;
+    // wrap entire builder area in a flex layout: existing left column + library right
+    let lib='<div style="font-weight:bold;color:#fd6;margin-bottom:6px">Design Library ('+state.shipLibrary.length+')</div>';
+    lib+='<div class="dim" style="font-size:11px;margin-bottom:6px">Saved on undock · shared with peers</div>';
+    if(state.shipLibrary.length===0){
+      lib+='<div class="dim" style="font-size:11px">No designs yet — your current ship will be saved when you undock.</div>';
+    } else {
+      const myHash=layoutHash(me.layout);
+      for(let i=state.shipLibrary.length-1;i>=0;i--){
+        const d=state.shipLibrary[i];
+        const costStr=Object.entries(d.cost).filter(([m,n])=>n>0).map(([m,n])=>n+m[0].toUpperCase()).join(' ')||'free';
+        const afford=canAfford(me,d.cost);
+        const isCurrent=d.hash===myHash;
+        lib+=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:5px;border:1px solid ${isCurrent?'#fd6':'#234'};border-radius:4px;background:${isCurrent?'rgba(40,32,4,0.4)':'rgba(8,16,24,0.5)'}">
+          ${miniLayoutHtml(d.layout)}
+          <div style="flex:1 1 0;min-width:0;font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis">
+            <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">#${i+1} ${esc(d.author||'?')}${isCurrent?' <span style="color:#fd6">★</span>':''}</div>
+            <div class="dim" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${costStr}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 auto">
+            <button ${(!afford||isCurrent)?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i})" style="padding:3px 8px;min-height:0;font-size:11px">Apply</button>
+            <button class="bad" onclick="Game.deleteDesign(${i})" style="font-size:11px;padding:3px 6px;min-height:0">✕</button>
+          </div>
+        </div>`;
+      }
+    }
+    const finalHtml=`<div style="display:flex;gap:14px;align-items:flex-start"><div style="flex:0 1 auto;min-width:0;max-width:540px">${h}</div><div style="flex:1 1 260px;min-width:240px;overflow:auto;max-height:calc(100vh - 100px)">${lib}</div></div>`;
+    b.innerHTML=finalHtml;
+  }
+  function setPlace(k){ placeMode=k; state.selectedCell=null; state.gunPopover=null; renderBuilder(); }
+  function builderClick(ev,x,y){
+    const me=state.players[state.me.id];
+    const c=me.layout[y][x];
+    if(placeMode==='__move'){
+      if(!state.selectedCell){
+        if(!c || c.type==='core') return;
+        state.selectedCell={x,y}; renderBuilder(); return;
+      }
+      const from=state.selectedCell; state.selectedCell=null;
+      if(from.x===x && from.y===y){ renderBuilder(); return; }
+      const dst=me.layout[y][x];
+      if(dst && dst.type==='core'){ renderBuilder(); return; }
+      const src=me.layout[from.y][from.x];
+      me.layout[y][x]=src; me.layout[from.y][from.x]=dst;
+      if(!isConnected(me.layout)){
+        me.layout[from.y][from.x]=src; me.layout[y][x]=dst;
+        chatLine('rearrange would disconnect ship');
+      }
+      renderBuilder(); return;
+    }
+    if(placeMode==='__remove'){
+      if(!c || c.type==='core') return;
+      removeAt(me,x,y);
+      renderBuilder(); return;
+    }
+    if(placeMode){
+      const inv=me.inventory||{};
+      if(!inv[placeMode]){ chatLine('out of '+placeMode); return; }
+      if(placeMode==='hull'){
+        if(c){ chatLine('cell already filled'); return; }
+        const adj=[[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>me.layout[y+dy]?.[x+dx]);
+        if(!adj){ chatLine('must place adjacent to ship'); return; }
+        inv.hull--;
+        me.layout[y][x]={type:'hull'};
+      } else {
+        if(!c){ chatLine('place hull first, then a module on it'); return; }
+        if(c.type!=='hull'){ chatLine('module already there — remove it first'); return; }
+        inv[placeMode]--;
+        let type=placeMode;
+        const opts={};
+        const uniq=UNIQUE_ITEMS[placeMode];
+        if(uniq){
+          type=uniq.baseType;
+          opts.unique=placeMode;
+          if(type==='gun'){ opts.variant=uniq.variant||'basic'; opts.aim=0; opts.auto=false; opts.multi=uniq.variant==='basic'&&placeMode==='quad_gun'?4:1; }
+        } else {
+          const it=ITEMS[placeMode];
+          if(placeMode.startsWith('gun_')){ type='gun'; opts.variant=it.gunVariant; opts.aim=0; opts.auto=false; opts.multi=1; }
+        }
+        me.layout[y][x]={type,...opts};
+      }
+      const s=shipStats(me); me.maxHp=s.maxHp; me.shieldMax=s.shieldMax; me.boostMax=s.boostCap; if(me.hp>me.maxHp) me.hp=me.maxHp; if(me.shield>me.shieldMax) me.shield=me.shieldMax; if(me.boost>me.boostMax) me.boost=me.boostMax;
+      renderBuilder(); return;
+    }
+    // No placeMode: tap a gun to open its popover; otherwise close popover
+    if(c && c.type==='gun'){
+      state.gunPopover={x,y};
+    } else {
+      state.gunPopover=null;
+    }
+    renderBuilder();
+  }
+  function removeAt(me,x,y){
+    const c=me.layout[y][x]; if(!c || c.type==='core') return;
+    const inv=me.inventory||(me.inventory={});
+    if(c.type==='hull'){
+      me.layout[y][x]=null;
+      if(!isConnected(me.layout)){
+        me.layout[y][x]=c;
+        chatLine('removing that hull would disconnect the ship');
+        return;
+      }
+      inv.hull=(inv.hull||0)+1;
+    } else {
+      const k=c.unique || (c.type==='gun'?'gun_'+(c.variant||'basic'):c.type);
+      if(ITEMS[k]||UNIQUE_ITEMS[k]) inv[k]=(inv[k]||0)+1;
+      me.layout[y][x]={type:'hull'};
+    }
+    const s=shipStats(me); me.maxHp=s.maxHp; me.shieldMax=s.shieldMax; me.boostMax=s.boostCap; if(me.hp>me.maxHp) me.hp=me.maxHp; if(me.shield>me.shieldMax) me.shield=me.shieldMax; if(me.boost>me.boostMax) me.boost=me.boostMax;
+  }
+  function gunCfg(action){
+    const me=state.players[state.me.id]; if(!me || !state.gunPopover) return;
+    const {x,y}=state.gunPopover;
+    const c=me.layout[y][x]; if(!c || c.type!=='gun') return;
+    if(action==='rot'){
+      c.aim=((c.aim||0)+Math.PI/4);
+      c.aim=((c.aim+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI;
+    } else if(action==='auto'){
+      c.auto=!c.auto;
+    } else if(action==='multi'){
+      c.multi=(c.multi||1)+1; if(c.multi>3) c.multi=1;
+    } else if(action==='remove'){
+      removeAt(me,x,y); state.gunPopover=null;
+    } else if(action==='close'){
+      state.gunPopover=null;
+    }
+    renderBuilder();
+  }
+  // legacy stubs kept for safety (old desktop API names)
+  function builderRightClick(ev,x,y){ ev.preventDefault(); state.gunPopover={x,y}; renderBuilder(); }
+  function dragStart(){}
+  function dragDrop(){}
+  function isConnected(g){
+    let cx=-1,cy=-1;
+    for(let y=0;y<9;y++)for(let x=0;x<9;x++) if(g[y][x] && g[y][x].type==='core'){cx=x;cy=y;}
+    if(cx<0) return false;
+    const seen=Array.from({length:9},()=>Array(9).fill(false));
+    const q=[[cx,cy]]; seen[cy][cx]=true;
+    while(q.length){
+      const [x,y]=q.pop();
+      for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        const nx=x+dx,ny=y+dy;
+        if(nx<0||ny<0||nx>=9||ny>=9) continue;
+        if(seen[ny][nx]||!g[ny][nx]) continue;
+        seen[ny][nx]=true; q.push([nx,ny]);
+      }
+    }
+    for(let y=0;y<9;y++)for(let x=0;x<9;x++) if(g[y][x] && !seen[y][x]) return false;
+    return true;
+  }
+
+  /* -------- Map pings -------- */
+  function dropPing(wx, wy){
+    const me=state.players[state.me.id];
+    const team=me?me.team:0;
+    state.pings.push({x:wx, y:wy, team, life:300});
+    while(state.pings.length>20) state.pings.shift();
+    Net.broadcast({kind:'ping', x:wx, y:wy, team});
+  }
+  function stepPings(){
+    for(const p of state.pings) p.life--;
+    state.pings = state.pings.filter(p=>p.life>0);
+  }
+
+  /* -------- Minimap -------- */
+  function revealAround(x,y){
+    const cs=MAP_CELL;
+    const cx=Math.floor((x+WORLD)/cs);
+    const cy=Math.floor((y+WORLD)/cs);
+    for(let dx=-2;dx<=2;dx++)for(let dy=-2;dy<=2;dy++){
+      state.explored.add((cx+dx)+','+(cy+dy));
+    }
+  }
+  function renderMinimap(){
+    const cv=document.getElementById('mmcv');
+    if(!cv) return;
+    const ctx=cv.getContext('2d');
+    const w=cv.width, h=cv.height;
+    ctx.fillStyle='#001'; ctx.fillRect(0,0,w,h);
+    const cs=MAP_CELL;
+    const cellsPerSide=Math.ceil(WORLD*2/cs);
+    const px=w/cellsPerSide;
+    ctx.fillStyle='#0a2438';
+    for(const key of state.explored){
+      const [cxs,cys]=key.split(',');
+      const cx=+cxs, cy=+cys;
+      if(cx<0||cy<0||cx>=cellsPerSide||cy>=cellsPerSide) continue;
+      ctx.fillRect(Math.floor(cx*px), Math.floor(h-(cy+1)*px), Math.ceil(px), Math.ceil(px));
+    }
+    // platforms discovered
+    for(const pl of state.platforms){
+      const cx=Math.floor((pl.x+WORLD)/cs);
+      const cy=Math.floor((pl.y+WORLD)/cs);
+      if(!state.explored.has(cx+','+cy)) continue;
+      const sx=(pl.x+WORLD)/(WORLD*2)*w;
+      const sy=h-(pl.y+WORLD)/(WORLD*2)*h;
+      const safeR=Math.max(5,(pl.r+PLATFORM_DEFENSE)/(WORLD*2)*w);
+      ctx.fillStyle='rgba(80,180,240,0.18)';
+      ctx.beginPath(); ctx.arc(sx,sy,safeR,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle='rgba(120,200,255,0.7)'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.arc(sx,sy,safeR,0,Math.PI*2); ctx.stroke();
+      ctx.fillStyle='#7df';
+      ctx.beginPath(); ctx.arc(sx,sy,4,0,Math.PI*2); ctx.fill();
+    }
+    // nebulae + gravity wells (drawn under everything else)
+    const cs2=MAP_CELL;
+    for(const n of state.nebulae){
+      const ncx=Math.floor((n.x+WORLD)/cs2);
+      const ncy=Math.floor((n.y+WORLD)/cs2);
+      if(!state.explored.has(ncx+','+ncy)) continue;
+      const sx=(n.x+WORLD)/(WORLD*2)*w;
+      const sy=h-(n.y+WORLD)/(WORLD*2)*h;
+      const rPx=n.r/(WORLD*2)*w;
+      ctx.fillStyle = n.radioactive?'rgba(110,200,90,0.32)':'rgba(150,150,170,0.25)';
+      ctx.beginPath(); ctx.arc(sx,sy,rPx,0,Math.PI*2); ctx.fill();
+      if(n.radioactive){
+        ctx.strokeStyle='rgba(180,255,140,0.65)'; ctx.lineWidth=1.2;
+        ctx.beginPath(); ctx.arc(sx,sy,rPx,0,Math.PI*2); ctx.stroke();
+      }
+    }
+    for(const g of state.gravWells){
+      const gcx=Math.floor((g.x+WORLD)/cs2);
+      const gcy=Math.floor((g.y+WORLD)/cs2);
+      if(!state.explored.has(gcx+','+gcy)) continue;
+      const sx=(g.x+WORLD)/(WORLD*2)*w;
+      const sy=h-(g.y+WORLD)/(WORLD*2)*h;
+      ctx.strokeStyle='rgba(180,80,200,0.55)'; ctx.lineWidth=1.2;
+      for(let k=0;k<3;k++){ ctx.beginPath(); ctx.arc(sx,sy,4+k*4,0,Math.PI*2); ctx.stroke(); }
+      ctx.fillStyle='#a3d';
+      ctx.beginPath(); ctx.arc(sx,sy,2.5,0,Math.PI*2); ctx.fill();
+    }
+    // radar: scan range + other players within it (disabled inside nebula)
+    const me=state.players[state.me.id];
+    if(me){
+      const stats=shipStats(me);
+      const blind=inNebula(me.x,me.y);
+      if(stats.radar>0 && !blind){
+        const range=stats.radarRange;
+        const sx=(me.x+WORLD)/(WORLD*2)*w;
+        const sy=h-(me.y+WORLD)/(WORLD*2)*h;
+        const rPx=range/(WORLD*2)*w;
+        ctx.fillStyle='rgba(120,255,180,0.08)';
+        ctx.strokeStyle='rgba(120,255,180,0.4)'; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.arc(sx,sy,rPx,0,Math.PI*2); ctx.fill(); ctx.stroke();
+        for(const pid in state.players){
+          if(pid===state.me.id) continue;
+          const op=state.players[pid]; if(!op.alive) continue;
+          if(inNebula(op.x,op.y)) continue; // ships inside nebulae are hidden from external radar
+          const dx=op.x-me.x, dy=op.y-me.y;
+          if(dx*dx+dy*dy>range*range) continue;
+          const psx=(op.x+WORLD)/(WORLD*2)*w;
+          const psy=h-(op.y+WORLD)/(WORLD*2)*h;
+          ctx.fillStyle=teamCssColor(op.team);
+          ctx.beginPath(); ctx.arc(psx,psy,3.5,0,Math.PI*2); ctx.fill();
+        }
+      }
+    }
+    // me
+    if(me){
+      const sx=(me.x+WORLD)/(WORLD*2)*w;
+      const sy=h-(me.y+WORLD)/(WORLD*2)*h;
+      ctx.fillStyle='#fd6';
+      ctx.beginPath(); ctx.arc(sx,sy,3,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle='#fd6'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(sx,sy);
+      ctx.lineTo(sx+Math.cos(me.rot)*7, sy-Math.sin(me.rot)*7);
+      ctx.stroke();
+    }
+    // race checkpoints — show all, highlight next
+    if(state.gameMode==='race' && state.raceCheckpoints.length){
+      const me_=state.players[state.me.id];
+      const nextIdx = me_ ? (me_.checkpoint||0)%state.raceCheckpoints.length : 0;
+      for(let i=0;i<state.raceCheckpoints.length;i++){
+        const cp=state.raceCheckpoints[i];
+        const sx=(cp.x+WORLD)/(WORLD*2)*w;
+        const sy=h-(cp.y+WORLD)/(WORLD*2)*h;
+        if(i===nextIdx){
+          ctx.strokeStyle='rgba(150,255,200,0.95)'; ctx.lineWidth=2;
+          ctx.beginPath(); ctx.arc(sx,sy,7,0,Math.PI*2); ctx.stroke();
+          ctx.fillStyle='#9fb'; ctx.beginPath(); ctx.arc(sx,sy,3,0,Math.PI*2); ctx.fill();
+        } else {
+          ctx.fillStyle='rgba(120,200,170,0.55)';
+          ctx.beginPath(); ctx.arc(sx,sy,3,0,Math.PI*2); ctx.fill();
+        }
+        ctx.fillStyle='rgba(180,255,210,0.9)'; ctx.font='10px Consolas, monospace'; ctx.textAlign='left';
+        ctx.fillText(String(i+1), sx+5, sy-3);
+      }
+    }
+    // pings
+    for(const png of state.pings){
+      const sx=(png.x+WORLD)/(WORLD*2)*w;
+      const sy=h-(png.y+WORLD)/(WORLD*2)*h;
+      const a=Math.min(1, png.life/120);
+      const pulse=0.6+0.4*Math.sin(performance.now()*0.012);
+      ctx.strokeStyle=teamCssColor(png.team);
+      ctx.globalAlpha=a;
+      ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(sx,sy,5+pulse*4,0,Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(sx,sy,2,0,Math.PI*2); ctx.fill();
+      ctx.globalAlpha=1;
+    }
+    // border
+    ctx.strokeStyle='#134'; ctx.lineWidth=1;
+    ctx.strokeRect(0.5,0.5,w-1,h-1);
+  }
+
+  /* -------- Chat -------- */
+  function chatLine(s){
+    const c=document.getElementById('chatlog');
+    const div=document.createElement('div'); div.textContent=s; c.appendChild(div);
+    while(c.children.length>8) c.removeChild(c.firstChild);
+    setTimeout(()=>div.remove(),8000);
+  }
+
+  /* -------- FX overlay (hit arcs + particles) -------- */
+  const fxCv=document.getElementById('fx');
+  const fxCtx=fxCv.getContext('2d');
+  function resizeFx(){
+    const dpr=Math.min(window.devicePixelRatio||1,2);
+    fxCv.width=Math.floor(innerWidth*dpr);
+    fxCv.height=Math.floor(innerHeight*dpr);
+  }
+  resizeFx(); window.addEventListener('resize',resizeFx);
+
+  function spawnHitArc(targetPlayer, bullet){
+    if(targetPlayer.id!==state.me.id) return; // only show your own hits
+    const ang=Math.atan2(bullet.y-targetPlayer.y, bullet.x-targetPlayer.x); // points TOWARD bullet
+    state.hits.push({angle:ang, life:60, maxLife:60});
+  }
+  function spawnExplosion(x,y,size){
+    const n=28+Math.floor(Math.random()*10);
+    for(let i=0;i<n;i++){
+      const a=Math.random()*Math.PI*2;
+      const sp=0.8+Math.random()*2.2;
+      const r=200+Math.floor(Math.random()*55);
+      const g=80+Math.floor(Math.random()*80);
+      const b=20+Math.floor(Math.random()*40);
+      state.particles.push({
+        x:x+(Math.random()-0.5)*size, y:y+(Math.random()-0.5)*size,
+        vx:Math.cos(a)*sp, vy:Math.sin(a)*sp,
+        life:60+Math.floor(Math.random()*60), maxLife:120,
+        r,g,b, size:2+Math.random()*2.5
+      });
+    }
+  }
+  function stepFx(){
+    // hit arcs
+    for(const h of state.hits) h.life--;
+    if(state.hits.length>32) state.hits.splice(0, state.hits.length-32);
+    state.hits=state.hits.filter(h=>h.life>0);
+    // particles
+    for(const p of state.particles){
+      p.x+=p.vx; p.y+=p.vy;
+      p.vx*=0.97; p.vy*=0.97;
+      p.life--;
+    }
+    state.particles=state.particles.filter(p=>p.life>0);
+  }
+  function drawFx(){
+    const me=state.players[state.me.id];
+    const w=fxCv.width, h=fxCv.height;
+    fxCtx.clearRect(0,0,w,h);
+    const dpr=Math.min(window.devicePixelRatio||1,2);
+    const cx=w/2, cy=h/2;
+
+    // particles (world space -> screen space)
+    if(me){
+      for(const p of state.particles){
+        const sx=cx+(p.x-me.x)*dpr;
+        const sy=cy-(p.y-me.y)*dpr;
+        if(sx<-20||sy<-20||sx>w+20||sy>h+20) continue;
+        const a=Math.min(1, p.life/40);
+        fxCtx.fillStyle=`rgba(${p.r},${p.g},${p.b},${a})`;
+        fxCtx.beginPath();
+        fxCtx.arc(sx,sy, p.size*dpr, 0, Math.PI*2);
+        fxCtx.fill();
+      }
+    }
+
+    // nebula fog
+    if(me && state.nebulae.length){
+      const tn=performance.now()*0.0002;
+      const insideAny=inNebula(me.x,me.y);
+      // Distant nebula clouds — only drawn when player is OUTSIDE a nebula.
+      // Denser outer edge so the visible boundary matches the trigger circle.
+      if(!insideAny){
+        for(const n of state.nebulae){
+          const dx=n.x-me.x, dy=n.y-me.y;
+          const rOnScreen=n.r*dpr;
+          if(Math.hypot(dx,dy) - n.r > w/2/dpr+200) continue;
+          const sx=cx+dx*dpr, sy=cy-dy*dpr;
+          const t=tn+n.seed;
+          const colInner = n.radioactive?'rgba(140,200,110,0.12)':'rgba(170,170,185,0.10)';
+          const colMid   = n.radioactive?'rgba(100,180,90,0.34)':'rgba(135,135,160,0.30)';
+          const colEdge  = n.radioactive?'rgba(70,140,60,0.60)':'rgba(95,95,120,0.55)';
+          for(let i=0;i<5;i++){
+            const ax=Math.cos(t*1.2+i*1.3)*30*dpr;
+            const ay=Math.sin(t*0.9+i*1.7)*30*dpr;
+            const rad=rOnScreen-i*30*dpr;
+            if(rad<20) continue;
+            const grd=fxCtx.createRadialGradient(sx+ax,sy+ay,0,sx+ax,sy+ay,rad);
+            grd.addColorStop(0,colInner);
+            grd.addColorStop(0.7,colMid);
+            grd.addColorStop(1,colEdge);
+            fxCtx.fillStyle=grd;
+            fxCtx.beginPath(); fxCtx.arc(sx+ax,sy+ay,rad,0,Math.PI*2); fxCtx.fill();
+          }
+        }
+      }
+      // Inside a nebula: dense screen fog with a truly cut-out clear bubble around player.
+      if(insideAny){
+        const insideRad = inRadioactiveNebula(me.x,me.y);
+        fxCtx.fillStyle = insideRad?'rgba(75,135,75,0.90)':'rgba(85,85,105,0.88)';
+        fxCtx.fillRect(0,0,w,h);
+        const t2=performance.now()*0.0005;
+        const jx=Math.cos(t2)*6*dpr, jy=Math.sin(t2*0.8)*6*dpr;
+        const innerR=140*dpr;
+        const outerR=340*dpr;
+        fxCtx.save();
+        fxCtx.globalCompositeOperation='destination-out';
+        const grd=fxCtx.createRadialGradient(cx+jx,cy+jy,0,cx+jx,cy+jy,outerR);
+        grd.addColorStop(0,'rgba(0,0,0,1)');
+        grd.addColorStop(innerR/outerR,'rgba(0,0,0,1)');
+        grd.addColorStop(1,'rgba(0,0,0,0)');
+        fxCtx.fillStyle=grd;
+        fxCtx.fillRect(0,0,w,h);
+        fxCtx.restore();
+      }
+    }
+
+    // race countdown / wait overlay
+    if(state.raceCountdown === -1){
+      // waiting for peers
+      fxCtx.save();
+      fxCtx.translate(cx, cy);
+      fxCtx.font='bold '+(48*dpr)+'px Consolas, monospace';
+      fxCtx.textAlign='center'; fxCtx.textBaseline='middle';
+      fxCtx.fillStyle='rgba(0,0,0,0.6)';
+      fxCtx.fillText('WAITING FOR PEERS', 3*dpr, 3*dpr);
+      fxCtx.fillStyle='rgba(150,255,200,0.95)';
+      fxCtx.fillText('WAITING FOR PEERS', 0, 0);
+      // ready count line
+      fxCtx.font='bold '+(20*dpr)+'px Consolas, monospace';
+      fxCtx.fillStyle='rgba(200,220,210,0.9)';
+      fxCtx.fillText(state.racePeersReady.size+' / '+state.raceExpectedReadies+' ready', 0, 40*dpr);
+      fxCtx.restore();
+    } else if(state.raceCountdown>0){
+      const sec = Math.ceil(state.raceCountdown/60);
+      const txt = sec>0 ? String(sec) : 'GO!';
+      const frac = (state.raceCountdown%60)/60;
+      const scale = 1 + (1-frac)*0.5;
+      fxCtx.save();
+      fxCtx.translate(cx, cy);
+      fxCtx.scale(scale, scale);
+      fxCtx.font='bold '+(120*dpr)+'px Consolas, monospace';
+      fxCtx.textAlign='center'; fxCtx.textBaseline='middle';
+      fxCtx.fillStyle='rgba(0,0,0,0.5)';
+      fxCtx.fillText(txt, 4*dpr, 4*dpr);
+      fxCtx.fillStyle='rgba(255,235,140,0.95)';
+      fxCtx.fillText(txt, 0, 0);
+      fxCtx.restore();
+    }
+
+    // race: glowing ring at next checkpoint + screen-edge arrow when off-screen
+    if(state.gameMode==='race' && me && me.alive && state.raceCheckpoints.length){
+      const idx=(me.checkpoint||0)%state.raceCheckpoints.length;
+      const cp=state.raceCheckpoints[idx];
+      const sx=cx+(cp.x-me.x)*dpr;
+      const sy=cy-(cp.y-me.y)*dpr;
+      const rPx=cp.r*dpr;
+      const onScreen = sx>-rPx && sy>-rPx && sx<w+rPx && sy<h+rPx;
+      if(onScreen){
+        const pulse=0.7+0.3*Math.sin(performance.now()*0.006);
+        // outer glow
+        fxCtx.strokeStyle=`rgba(120,255,180,${0.35*pulse})`;
+        fxCtx.lineWidth=8*dpr;
+        fxCtx.beginPath(); fxCtx.arc(sx,sy,rPx,0,Math.PI*2); fxCtx.stroke();
+        // crisp ring
+        fxCtx.strokeStyle=`rgba(180,255,210,${0.85*pulse})`;
+        fxCtx.lineWidth=3*dpr;
+        fxCtx.beginPath(); fxCtx.arc(sx,sy,rPx,0,Math.PI*2); fxCtx.stroke();
+      } else {
+        // screen-edge arrow pointing toward checkpoint
+        const dx=cp.x-me.x, dy=cp.y-me.y;
+        const ang=Math.atan2(-dy, dx); // screen angle (Y inverted)
+        const margin=60*dpr;
+        const ax=cx+Math.cos(ang)*(Math.min(cx, cy)-margin);
+        const ay=cy+Math.sin(ang)*(Math.min(cx, cy)-margin);
+        fxCtx.save();
+        fxCtx.translate(ax, ay); fxCtx.rotate(ang);
+        fxCtx.fillStyle='rgba(150,255,200,0.85)';
+        fxCtx.beginPath();
+        fxCtx.moveTo(20*dpr, 0);
+        fxCtx.lineTo(-12*dpr, 12*dpr);
+        fxCtx.lineTo(-6*dpr, 0);
+        fxCtx.lineTo(-12*dpr, -12*dpr);
+        fxCtx.closePath();
+        fxCtx.fill();
+        fxCtx.restore();
+        // distance label
+        const dist=Math.round(Math.hypot(dx,dy));
+        fxCtx.fillStyle='rgba(180,255,210,0.95)';
+        fxCtx.font=`${12*dpr}px Consolas, monospace`;
+        fxCtx.textAlign='center';
+        fxCtx.fillText('CP '+(idx+1)+' · '+dist+'u', ax, ay+24*dpr);
+      }
+    }
+
+    // heat arc indicator below each alive ship: dot→half-circle, green→yellow→red, blinks while overheated
+    if(me){
+      for(const id in state.players){
+        const p=state.players[id];
+        if(!p.alive) continue;
+        const heat=p.heat||0;
+        if(heat<=0 && !p.overheated) continue;
+        const sx=cx+(p.x-me.x)*dpr;
+        const sy=cy-(p.y-me.y)*dpr;
+        if(sx<-60||sy<-60||sx>w+60||sy>h+60) continue;
+        const ratio=Math.min(1, heat/(p._maxHeat||100));
+        const radius=(4+ratio*18)*dpr;
+        const arcSpan=Math.max(0.18, ratio*Math.PI);
+        let r,g,b;
+        if(ratio<0.5){ // green → yellow
+          r=Math.floor(40+ratio*2*215); g=220; b=60;
+        } else {       // yellow → red
+          r=255; g=Math.floor(220-(ratio-0.5)*2*200); b=Math.max(20, 60-(ratio-0.5)*2*40);
+        }
+        let alpha=1;
+        if(p.overheated){
+          // pulse alpha 0.35..1.0 while overheated
+          alpha=0.35+0.55*(0.5+0.5*Math.sin(performance.now()*0.025));
+        }
+        fxCtx.strokeStyle=`rgba(${r},${g},${b},${alpha})`;
+        fxCtx.lineWidth=4*dpr;
+        fxCtx.lineCap='round';
+        fxCtx.beginPath();
+        fxCtx.arc(sx, sy+24*dpr, radius, Math.PI/2-arcSpan/2, Math.PI/2+arcSpan/2);
+        fxCtx.stroke();
+      }
+    }
+
+    // fuzzy HP segments above other ships
+    if(me){
+      const segW=7*dpr, segH=4*dpr, gap=1*dpr;
+      const totalW=segW*4+gap*3;
+      for(const id in state.players){
+        if(id===state.me.id) continue;
+        const p=state.players[id];
+        if(!p.alive||!p.maxHp) continue;
+        const sx=cx+(p.x-me.x)*dpr;
+        const sy=cy-(p.y-me.y)*dpr;
+        if(sx<-40||sy<-40||sx>w+40||sy>h+40) continue;
+        const ratio=p.hp/p.maxHp;
+        const lit=ratio>0.75?4:ratio>0.5?3:ratio>0.25?2:1;
+        const color=lit===4?'#5f8':lit===3?'#fd6':lit===2?'#f93':'#f33';
+        const bx=sx-totalW/2, by=sy-28*dpr;
+        for(let i=0;i<4;i++){
+          fxCtx.fillStyle=i<lit?color:'rgba(40,50,60,0.55)';
+          fxCtx.fillRect(bx+i*(segW+gap), by, segW, segH);
+        }
+      }
+    }
+
+    // hit arcs (screen-edge)
+    if(state.hits.length){
+      const r=Math.min(cx,cy)*0.88;
+      for(const hit of state.hits){
+        const a=hit.life/hit.maxLife;
+        const screenAng=-hit.angle; // world Y up -> screen Y down
+        fxCtx.save();
+        fxCtx.translate(cx,cy);
+        fxCtx.rotate(screenAng);
+        fxCtx.strokeStyle=`rgba(255,70,70,${a})`;
+        fxCtx.lineWidth=14*dpr;
+        fxCtx.lineCap='round';
+        fxCtx.beginPath();
+        fxCtx.arc(0,0,r,-0.35,0.35);
+        fxCtx.stroke();
+        fxCtx.restore();
+      }
+    }
+  }
+
+  /* -------- Main loop -------- */
+  function killLeader(){
+    // returns the highest kill count among non-neutral teams (1-5 summed),
+    // or among individual players if team=0 — NPCs excluded
+    const teams={};
+    for(const id in state.players){
+      const p=state.players[id];
+      if(p.pirate || p.trader) continue;
+      const key=p.team===0?('p_'+id):('team_'+p.team);
+      teams[key]=(teams[key]||0)+(p.kills||0);
+    }
+    let m=0;
+    for(const k in teams) if(teams[k]>m) m=teams[k];
+    return m;
+  }
+  function fmtClock(ticks){
+    const s=Math.max(0,Math.floor(ticks/60));
+    const m=Math.floor(s/60), ss=s%60;
+    return m+':'+(ss<10?'0':'')+ss;
+  }
+  function loop(){
+    if(state.mode!=='playing') return;
+    step();
+    stepFx();
+    buildScene();
+    drawFx();
+    updateHud();
+    // low-HP alarm
+    const me2=state.players[state.me.id];
+    const low=!!(me2 && me2.alive && me2.hp>0 && me2.hp/me2.maxHp<0.25 && !state.docked);
+    document.body.classList.toggle('lowhp',low);
+    // engine sound: every frame, but only push when something changed
+    {
+      let active=false, intensity=0, boosting=false;
+      if(me2 && me2.alive && !state.docked){
+        active=!!me2.thrusting;
+        const s=shipStats(me2);
+        intensity=Math.min(1.5, 0.4 + s.engines*0.2);
+        boosting=!!me2.boosting;
+      }
+      const sig = (active?1:0) + '|' + intensity.toFixed(2) + '|' + (boosting?1:0);
+      if(sig !== state._engineSig){
+        state._engineSig = sig;
+        Sound.setEngine(active, intensity, boosting);
+      }
+    }
+    // generative music intensity, updated twice a second
+    if(state.tick%30===0){
+      let intens = 0.1; // floor — never fully silent
+      if(state.docked){
+        intens = 0.04;
+      } else if(me2 && me2.alive){
+        let nearbyHostiles = 0;
+        for(const id in state.players){
+          if(id===state.me.id) continue;
+          const op=state.players[id];
+          if(!op.alive || op.trader || op.docked || op.grace>0) continue;
+          const hostile = op.pirate || op.team===0 || op.team!==me2.team;
+          if(!hostile) continue;
+          const dx=op.x-me2.x, dy=op.y-me2.y;
+          if(dx*dx+dy*dy<1800*1800) nearbyHostiles++;
+        }
+        intens += Math.min(0.45, nearbyHostiles*0.15);
+        if(me2.hitFlash>0) intens += 0.25;
+        if(state.kingActive) intens += 0.20;
+        if(inRadioactiveNebula(me2.x,me2.y)) intens += 0.15;
+        if(me2.hp/me2.maxHp < 0.25) intens += 0.15; // low HP raises tension
+      }
+      Music.setIntensity(Math.min(1, intens));
+    }
+    if(state.showMap && (state.tick%6===0)) renderMinimap();
+    // round timer banner
+    if(state.roundEndTick>0 && !state.roundEnded){
+      if(state.tick%15===0){
+        const remaining=state.roundEndTick-state.tick;
+        const el=document.getElementById('roundTimer');
+        el.textContent='⏱ '+fmtClock(remaining)+(state.killGoal?' · 🎯 '+killLeader()+'/'+state.killGoal:'');
+        el.style.display='block';
+        el.classList.toggle('urgent',remaining<60*60); // <1 min
+      }
+      if(state.tick>=state.roundEndTick){ endRound(); }
+    } else if(state.killGoal>0 && !state.roundEnded){
+      if(state.tick%15===0){
+        const el=document.getElementById('roundTimer');
+        el.textContent='🎯 '+killLeader()+'/'+state.killGoal+' kills';
+        el.style.display='block';
+        el.classList.toggle('urgent',killLeader()>=state.killGoal-2);
+      }
+    }
+    // kill-goal end check
+    if(state.killGoal>0 && !state.roundEnded && killLeader()>=state.killGoal){
+      endRound();
+    }
+    requestAnimationFrame(loop);
+  }
+  function endRound(){
+    state.roundEnded=true;
+    document.getElementById('roundTimer').style.display='none';
+    if(state.gameMode==='race'){
+      // race results: finished racers first (in finish order), then unfinished sorted by progress
+      const racers=Object.values(state.players).filter(p=>!p.pirate && !p.trader);
+      const finished = state.raceFinishOrder.map(id=>state.players[id]).filter(Boolean);
+      const unfinished = racers.filter(p=>!state.raceFinishOrder.includes(p.id)).sort((a,b)=>{
+        if((b.lap||0)!==(a.lap||0)) return (b.lap||0)-(a.lap||0);
+        return (b.checkpoint||0)-(a.checkpoint||0);
+      });
+      let h='<table><thead><tr><th>#</th><th>Racer</th><th>Result</th></tr></thead><tbody>';
+      finished.forEach((p,i)=>{
+        const cls=p.id===state.me.id?'you':'';
+        h+=`<tr class="${cls}"><td>${i+1}</td><td>${esc(p.name)}</td><td>🏁 finished</td></tr>`;
+      });
+      unfinished.forEach((p,i)=>{
+        const cls=p.id===state.me.id?'you':'';
+        h+=`<tr class="${cls}"><td>${finished.length+i+1}</td><td>${esc(p.name)}</td><td>L${(p.lap||0)+1} cp${(p.checkpoint||0)+1}</td></tr>`;
+      });
+      h+='</tbody></table><div class="row" style="margin-top:12px"><button onclick="location.reload()">Play again</button></div>';
+      document.getElementById('endBody').innerHTML=h;
+      document.getElementById('endscreen').style.display='block';
+      chatLine('* race over');
+      return;
+    }
+    const rows=Object.values(state.players).filter(p=>!p.pirate && !p.trader).sort((a,b)=>{
+      const ra=(a.kills||0+1)/((a.deaths||0)+1);
+      const rb=(b.kills||0+1)/((b.deaths||0)+1);
+      if(rb!==ra) return rb-ra;
+      return (b.kills||0)-(a.kills||0);
+    });
+    let h='<table><thead><tr><th>#</th><th>Player</th><th>Team</th><th>K</th><th>D</th><th>K/D</th></tr></thead><tbody>';
+    rows.forEach((p,i)=>{
+      const k=p.kills||0, d=p.deaths||0;
+      const kd=d===0?(k>0?k+'.00':'—'):(k/d).toFixed(2);
+      const cls=p.id===state.me.id?'you':'';
+      h+=`<tr class="${cls}"><td>${i+1}</td><td>${esc(p.name)}</td><td>${p.team}</td><td>${k}</td><td>${d}</td><td>${kd}</td></tr>`;
+    });
+    h+='</tbody></table><div class="row" style="margin-top:12px"><button onclick="location.reload()">Play again</button></div>';
+    document.getElementById('endBody').innerHTML=h;
+    document.getElementById('endscreen').style.display='block';
+    chatLine('* round over');
+  }
+
+  /* -------- Lobby actions -------- */
+  function startSolo(){
+    state.me.name=document.getElementById('pname').value||'Solo';
+    try{ localStorage.setItem('sortie_name_v1', state.me.name); }catch(_){}
+    startPlaying();
+  }
+
+  /* -------- Manual WebRTC -------- */
+  const ICE={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
+  let pendingPC=null;
+  async function makeOffer(){
+    state.me.name=document.getElementById('pname').value||state.me.name;
+    const pc=new RTCPeerConnection(ICE);
+    const dc=pc.createDataChannel('g');
+    setupDC(pc,dc);
+    pc.onicecandidate=e=>{ if(!e.candidate) document.getElementById('sdp').value=JSON.stringify(pc.localDescription); };
+    await pc.setLocalDescription(await pc.createOffer());
+    pendingPC=pc;
+    document.getElementById('lobbyStatus').textContent='Offer being generated... wait for full SDP, then send to friend.';
+  }
+  async function acceptOffer(){
+    state.me.name=document.getElementById('pname').value||state.me.name;
+    const off=JSON.parse(document.getElementById('sdp').value);
+    const pc=new RTCPeerConnection(ICE);
+    pc.ondatachannel=e=>setupDC(pc,e.channel);
+    pc.onicecandidate=e=>{ if(!e.candidate) document.getElementById('sdp').value=JSON.stringify(pc.localDescription); };
+    await pc.setRemoteDescription(off);
+    await pc.setLocalDescription(await pc.createAnswer());
+    pendingPC=pc;
+    document.getElementById('lobbyStatus').textContent='Answer generating... copy from textarea and send back.';
+  }
+  async function acceptAnswer(){
+    if(!pendingPC) return;
+    const ans=JSON.parse(document.getElementById('sdp').value);
+    await pendingPC.setRemoteDescription(ans);
+    document.getElementById('lobbyStatus').textContent='Connected!';
+  }
+  function setupDC(pc,dc){
+    const peerId=rid();
+    Net.peers[peerId]={pc,dc};
+    dc.onopen=()=>{
+      document.getElementById('lobbyStatus').textContent='Peer connected.';
+      if(state.mode==='lobby'){ genWorld(); startPlaying(); }
+      else { askVote(peerId,'Remote'); }
+      dc.send(JSON.stringify({from:state.me.id,kind:'state',name:state.me.name,x:0,y:0,vx:0,vy:0,rot:0,hp:30,maxHp:30,team:0,alive:true}));
+      if(state.worldSeed){
+        try{ dc.send(JSON.stringify({from:state.me.id,kind:'world_seed',seed:state.worldSeed})); }catch(_){}
+      }
+      if(state.shipLibrary.length){
+        try{ dc.send(JSON.stringify({from:state.me.id,kind:'library',designs:state.shipLibrary})); }catch(_){}
+      }
+    };
+    dc.onmessage=ev=>{ try{ const m=JSON.parse(ev.data); handleNetMsg(m.from,m); }catch(_){} };
+    dc.onclose=()=>{ delete Net.peers[peerId]; chatLine('* peer disconnected'); };
+  }
+
+  // teams are set in the lobby and broadcast on join only; no in-game changes
+
+  // toggle race options row visibility in lobby
+  const gmSel=document.getElementById('gamemode');
+  if(gmSel){
+    const showRaceOpts=()=>{ document.getElementById('raceOptsRow').style.display = gmSel.value==='race' ? 'flex' : 'none'; };
+    gmSel.addEventListener('change', showRaceOpts);
+    showRaceOpts();
+  }
+
+  // populate initial name (last used, falling back to a random suffix)
+  const NAME_KEY='sortie_name_v1';
+  try{
+    const saved=localStorage.getItem(NAME_KEY);
+    document.getElementById('pname').value = saved || ('P-'+state.me.id.slice(0,3));
+  } catch(_) {
+    document.getElementById('pname').value='P-'+state.me.id.slice(0,3);
+  }
+  document.getElementById('pname').addEventListener('change', e=>{
+    try{ localStorage.setItem(NAME_KEY, e.target.value); }catch(_){}
+  });
+  document.getElementById('pname').addEventListener('blur', e=>{
+    try{ localStorage.setItem(NAME_KEY, e.target.value); }catch(_){}
+  });
+  // initial lobby UI render (library + pre-build ship)
+  renderLobbyLibrary();
+  renderLobbyBuilder();
+
+  /* -------- Quick chat -------- */
+  const QUICK_CHATS=['GG','Help!','On my way','Need repairs','Engaging','Watch out!'];
+  function renderChatMenu(){
+    let h='<div class="row dim" style="font-size:11px">Tap a message — desktop can also press 1–6.</div>';
+    QUICK_CHATS.forEach((msg,i)=>{
+      h+=`<div class="row"><button style="width:100%;text-align:left" onclick="Game.quickChat(${i})">${i+1}. ${msg}</button></div>`;
+    });
+    h+='<div class="row"><button onclick="Game.toggleChatMenu()">Close</button></div>';
+    document.getElementById('chatmenuBody').innerHTML=h;
+  }
+  renderChatMenu();
+  function toggleChatMenu(){
+    const el=document.getElementById('chatmenu');
+    const open=el.style.display==='block';
+    el.style.display=open?'none':'block';
+    document.getElementById('chatBtn').classList.toggle('active',!open);
+  }
+  function quickChat(idx){
+    const msg=QUICK_CHATS[idx]; if(!msg) return;
+    chatLine(state.me.name+': '+msg);
+    Net.broadcast({kind:'chat',text:msg});
+    document.getElementById('chatmenu').style.display='none';
+    document.getElementById('chatBtn').classList.remove('active');
+  }
+  window.addEventListener('keydown',e=>{
+    if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
+    if(state.mode!=='playing') return;
+    // digits 1-6 → quick chat
+    if(e.code.startsWith('Digit')){
+      const n=parseInt(e.code.slice(-1));
+      if(n>=1 && n<=QUICK_CHATS.length){ e.preventDefault(); quickChat(n-1); }
+    }
+  });
+
+  /* -------- Touch UI: joystick + fire button -------- */
+  if(state.touchUI) document.body.classList.add('touchOn');
+  // also opt-in once any touch occurs (covers hybrid devices)
+  window.addEventListener('touchstart',()=>{ state.touchUI=true; document.body.classList.add('touchOn'); },{once:true,passive:true});
+
+  const joyEl=document.getElementById('joystick');
+  const stickEl=joyEl.querySelector('.stick');
+  function joyShow(sx,sy){
+    joyEl.style.left=(sx-70)+'px'; joyEl.style.top=(sy-70)+'px';
+    joyEl.style.display='block';
+  }
+  function joyMove(dx,dy){
+    const max=60; const m=Math.hypot(dx,dy);
+    const k=m>max?max/m:1;
+    stickEl.style.transform='translate('+(dx*k)+'px,'+(dy*k)+'px)';
+    state.joy.x=Math.max(-1,Math.min(1,dx/max));
+    state.joy.y=Math.max(-1,Math.min(1,dy/max));
+  }
+  function joyClear(){
+    state.joy.active=false; state.joy.pid=null; state.joy.x=0; state.joy.y=0;
+    stickEl.style.transform='';
+    if(state.touchUI) joyEl.style.display='none';
+  }
+  window.addEventListener('pointerdown',e=>{
+    if(state.mode!=='playing' || state.docked) return;
+    if(e.pointerType==='mouse') return;
+    // ignore UI hits
+    const t=e.target;
+    if(t.closest('.panel') || t.closest('#topbar') || t.closest('#firebtn')) return;
+    if(e.clientX > window.innerWidth/2) return; // left half = joystick
+    state.joy.active=true; state.joy.pid=e.pointerId; state.joy.sx=e.clientX; state.joy.sy=e.clientY;
+    joyShow(e.clientX,e.clientY); joyMove(0,0);
+    e.preventDefault();
+  },{passive:false});
+  window.addEventListener('pointermove',e=>{
+    if(!state.joy.active || e.pointerId!==state.joy.pid) return;
+    joyMove(e.clientX-state.joy.sx, e.clientY-state.joy.sy);
+  });
+  function joyEnd(e){ if(state.joy.active && e.pointerId===state.joy.pid) joyClear(); }
+  window.addEventListener('pointerup',joyEnd);
+  window.addEventListener('pointercancel',joyEnd);
+
+  // Minimap click → drop a ping at the clicked world position
+  const mmcvEl=document.getElementById('mmcv');
+  if(mmcvEl){
+    mmcvEl.addEventListener('pointerdown', e=>{
+      if(state.mode!=='playing') return;
+      const rect=mmcvEl.getBoundingClientRect();
+      const fx=(e.clientX-rect.left)/rect.width;
+      const fy=(e.clientY-rect.top)/rect.height;
+      // map (0,0)=top-left of canvas to world coords (Y flipped)
+      const wx = fx*(WORLD*2) - WORLD;
+      const wy = WORLD - fy*(WORLD*2);
+      dropPing(wx, wy);
+      e.preventDefault();
+    });
+  }
+
+  const fireEl=document.getElementById('firebtn');
+  fireEl.addEventListener('pointerdown',e=>{
+    state.fireHeld=true; fireEl.classList.add('on');
+    try{ fireEl.setPointerCapture(e.pointerId); }catch(_){}
+    e.preventDefault();
+  });
+  fireEl.addEventListener('pointerup',e=>{ state.fireHeld=false; fireEl.classList.remove('on'); });
+  fireEl.addEventListener('pointercancel',()=>{ state.fireHeld=false; fireEl.classList.remove('on'); });
+
+  const boostEl=document.getElementById('boostbtn');
+  boostEl.addEventListener('pointerdown',e=>{
+    state.boostHeld=true; boostEl.classList.add('on');
+    try{ boostEl.setPointerCapture(e.pointerId); }catch(_){}
+    e.preventDefault();
+  });
+  boostEl.addEventListener('pointerup',()=>{ state.boostHeld=false; boostEl.classList.remove('on'); });
+  boostEl.addEventListener('pointercancel',()=>{ state.boostHeld=false; boostEl.classList.remove('on'); });
+
+  return {
+    startSolo,makeOffer,acceptOffer,acceptAnswer,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,
+    castVote,sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
+    lobbySetPlace,lobbyBuilderClick,lobbyGunCfg,lobbySaveDesign,lobbyResetDesign,lobbyLoadDesign,
+  };
+})();
+</script>
+</body>
+</html>
