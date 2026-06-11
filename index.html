@@ -1455,7 +1455,7 @@ const Game=(()=>{
     const dx=cp2.x-cp1.x, dy=cp2.y-cp1.y;
     const len=Math.hypot(dx,dy)||1;
     const ux=dx/len, uy=dy/len;                  // unit vector c1 -> c2
-    const back=(cp1.r||140)+80;                   // outside the cp1 ring
+    const back=(cp1.r||140)+240;                  // outside the cp1 ring (extra buffer so wide grids are fair)
     const baseX=cp1.x-ux*back, baseY=cp1.y-uy*back;
     const lateral = slot===0 ? 0 : (slot%2===1 ? Math.ceil(slot/2) : -Math.ceil(slot/2));
     const spacing=80;
