@@ -29,7 +29,13 @@
   #lobbyGrid{display:flex;gap:14px;flex-wrap:wrap}
   #lobbyGrid > div{flex:1 1 300px;min-width:280px}
   #lobbyGrid h4{margin:0 0 8px 0;color:#fd6;font-size:13px;border-bottom:1px solid #234;padding-bottom:4px}
-  #lobbyLibraryBody{max-height:520px;overflow:auto;padding-right:4px}
+  #lobbyLibraryBody{max-height:260px;overflow:auto;padding-right:4px}
+  #lobbyPlayers{font-size:12px;line-height:1.6;margin-bottom:6px}
+  #lobbyPlayers .you{color:#9df;font-weight:bold}
+  #lobbyChatLog{font-size:12px;height:150px;overflow:auto;background:rgba(0,0,0,0.3);border:1px solid #234;padding:6px;border-radius:4px;margin-bottom:6px}
+  #lobbyChatLog div{margin-bottom:2px;word-wrap:break-word}
+  #lobbyChatLog .sys{color:#888;font-style:italic}
+  #lobbyChatInput{width:100%;background:#012;color:#cfe;border:1px solid #2af;padding:6px;font-size:12px;box-sizing:border-box;border-radius:3px;font-family:inherit}
   #vote{top:8px;left:50%;transform:translateX(-50%);padding:6px 10px;display:none}
   #vote button{margin:0 4px}
   #hub{display:none;left:0;top:0;right:0;bottom:0;width:auto;border-radius:0;border:none;border-bottom:1px solid #2af;background:rgba(4,10,18,.97);box-shadow:none}
@@ -173,7 +179,7 @@
               <option value="5">5 — orange</option>
             </select></div>
           <div class="row">
-            <button onclick="Game.startSolo()">Start Solo</button>
+            <button onclick="Game.startSolo()">Start Game</button>
           </div>
           <hr>
           <div class="row dim">LAN / Internet — WebRTC handshake. Host taps Create Offer, taps Share, sends link. Friend opens link, taps Accept, taps Share, sends link back. Host pastes the answer link and taps Accept Pasted Answer.</div>
@@ -187,6 +193,10 @@
         <div id="lobbyLibrary">
           <h4>Design Library</h4>
           <div id="lobbyLibraryBody"></div>
+          <h4 style="margin-top:14px">Multiplayer</h4>
+          <div id="lobbyPlayers"></div>
+          <div id="lobbyChatLog"></div>
+          <input id="lobbyChatInput" type="text" placeholder="Lobby chat — Enter to send" autocomplete="off">
         </div>
         <div id="lobbyBuilder">
           <h4>Pre-build Ship <span class="dim" style="font-size:11px;font-weight:normal">(creative mode, no cost)</span></h4>
@@ -588,6 +598,7 @@ const Game=(()=>{
     raceCountdown:0,        // ticks remaining; -1 = waiting on peers; >0 = counting down; 0 = racing
     racePeersReady:new Set(),
     pingTo:{},        // playerId → last measured RTT in ms
+    lobbyPeers:{},    // peerId → {name} for the pre-game lobby player list
     raceExpectedReadies:0,
     raceWaitStartTick:0,
     keys:{},
@@ -966,6 +977,25 @@ const Game=(()=>{
         while(state.shipLibrary.length>40) state.shipLibrary.shift();
         if(added){ saveLibrary(); if(state.docked) renderHub(); }
       }
+    } else if(m.kind==='lobby_join'){
+      state.lobbyPeers[from]={name:m.name||'P-'+from.slice(0,3)};
+      if(typeof refreshLobbyMP==='function') refreshLobbyMP();
+      if(typeof addLobbyChatLine==='function') addLobbyChatLine('* '+(m.name||from.slice(0,4))+' joined','sys');
+    } else if(m.kind==='lobby_chat'){
+      if(typeof addLobbyChatLine==='function') addLobbyChatLine((m.name||from.slice(0,4))+': '+(m.text||''));
+    } else if(m.kind==='start_game'){
+      // Host pressed Start — sync settings and join them.
+      try {
+        document.getElementById('gamemode').value = m.gameMode || 'deathmatch';
+        document.getElementById('roundmin').value = m.mins ?? 10;
+        document.getElementById('killgoal').value = m.goal ?? 0;
+        document.getElementById('aicount').value = m.aicount ?? 0;
+        const rc=document.getElementById('raceCombat'); if(rc) rc.checked = !!m.raceCombat;
+        const rcp=document.getElementById('raceCheckpoints'); if(rcp) rcp.value = m.raceCheckpointsN || 6;
+        const rl=document.getElementById('raceLaps'); if(rl) rl.value = m.raceLaps || 1;
+      } catch(_){}
+      if(m.seed) genWorld((m.seed>>>0));
+      startPlaying();
     }
   }
 
@@ -3495,6 +3525,24 @@ const Game=(()=>{
   function startSolo(){
     state.me.name=document.getElementById('pname').value||'Solo';
     try{ localStorage.setItem('sortie_name_v1', state.me.name); }catch(_){}
+    // Have any peers join us with the same settings & world.
+    const havePeers = Object.keys(Net.peers||{}).length>0;
+    if(havePeers){
+      const seed = state.worldSeed || ((Math.random()*0x7fffffff)>>>0);
+      if(!state.worldSeed) genWorld(seed);
+      try {
+        Net.broadcast({kind:'start_game',
+          seed,
+          gameMode: document.getElementById('gamemode').value||'deathmatch',
+          mins: parseInt(document.getElementById('roundmin').value)||0,
+          goal: parseInt(document.getElementById('killgoal').value)||0,
+          aicount: parseInt(document.getElementById('aicount').value)||0,
+          raceCombat: !!(document.getElementById('raceCombat')?.checked),
+          raceCheckpointsN: parseInt(document.getElementById('raceCheckpoints')?.value)||6,
+          raceLaps: parseInt(document.getElementById('raceLaps')?.value)||1,
+        });
+      } catch(_){}
+    }
     startPlaying();
   }
 
@@ -3555,10 +3603,25 @@ const Game=(()=>{
     if(el){ el.style.display='none'; el.textContent=''; }
   }
 
+  function setLobbyStatus(t){
+    const el=document.getElementById('lobbyStatus'); if(el) el.textContent=t;
+  }
+  // Surface real ICE/peer connection state so users know what's actually happening.
+  function watchPC(pc, who){
+    pc.oniceconnectionstatechange = ()=>{
+      const s = pc.iceConnectionState;
+      if(s==='checking') setLobbyStatus(who+': checking connection...');
+      else if(s==='connected' || s==='completed') setLobbyStatus(who+': linked. Opening data channel...');
+      else if(s==='failed') setLobbyStatus(who+': connection failed — NAT/firewall? Try same network, or add a TURN server.');
+      else if(s==='disconnected') setLobbyStatus(who+': disconnected.');
+    };
+  }
+
   async function makeOffer(){
     state.me.name=document.getElementById('pname').value||state.me.name;
     clearShareUrl();
     const pc=new RTCPeerConnection(ICE);
+    watchPC(pc,'host');
     const dc=pc.createDataChannel('g');
     setupDC(pc,dc);
     pc.onicecandidate=async e=>{
@@ -3580,6 +3643,7 @@ const Game=(()=>{
     let off; try { off = JSON.parse(raw); } catch(_) { document.getElementById('lobbyStatus').textContent='Offer is not valid SDP.'; return; }
     clearShareUrl();
     const pc=new RTCPeerConnection(ICE);
+    watchPC(pc,'guest');
     pc.ondatachannel=e=>setupDC(pc,e.channel);
     pc.onicecandidate=async e=>{
       if(!e.candidate){
@@ -3600,7 +3664,7 @@ const Game=(()=>{
     if(!raw){ document.getElementById('lobbyStatus').textContent='No valid answer in textarea — paste the link first.'; return; }
     let ans; try { ans = JSON.parse(raw); } catch(_) { document.getElementById('lobbyStatus').textContent='Answer is not valid SDP.'; return; }
     await pendingPC.setRemoteDescription(ans);
-    document.getElementById('lobbyStatus').textContent='Connected!';
+    setLobbyStatus('Answer accepted — waiting for ICE to connect...');
   }
 
   async function sdpCopy(){
@@ -3649,9 +3713,12 @@ const Game=(()=>{
     const peerId=rid();
     Net.peers[peerId]={pc,dc};
     dc.onopen=()=>{
-      document.getElementById('lobbyStatus').textContent='Peer connected.';
-      if(state.mode==='lobby'){ genWorld(); startPlaying(); }
-      else { askVote(peerId,'Remote'); }
+      setLobbyStatus('Peer connected — chat below, then host taps Start.');
+      // Mid-game join: still goes through the existing vote flow.
+      if(state.mode!=='lobby') askVote(peerId,'Remote');
+      // Announce ourselves to the new peer.
+      try{ dc.send(JSON.stringify({from:state.me.id,kind:'lobby_join',name:state.me.name||'P-'+state.me.id.slice(0,3)})); }catch(_){}
+      // Legacy state message (kept so mid-game joiners still get our ship state).
       dc.send(JSON.stringify({from:state.me.id,kind:'state',name:state.me.name,x:0,y:0,vx:0,vy:0,rot:0,hp:30,maxHp:30,team:0,alive:true}));
       if(state.worldSeed){
         try{ dc.send(JSON.stringify({from:state.me.id,kind:'world_seed',seed:state.worldSeed})); }catch(_){}
@@ -3659,10 +3726,50 @@ const Game=(()=>{
       if(state.shipLibrary.length){
         try{ dc.send(JSON.stringify({from:state.me.id,kind:'library',designs:state.shipLibrary})); }catch(_){}
       }
+      refreshLobbyMP();
     };
     dc.onmessage=ev=>{ try{ const m=JSON.parse(ev.data); handleNetMsg(m.from,m); }catch(_){} };
-    dc.onclose=()=>{ delete Net.peers[peerId]; chatLine('* peer disconnected'); };
+    dc.onclose=()=>{
+      delete Net.peers[peerId];
+      // No per-peer-to-from mapping tracked — clear the roster if the last channel closed.
+      if(!Object.keys(Net.peers).length) state.lobbyPeers={};
+      refreshLobbyMP();
+      if(state.mode==='lobby') addLobbyChatLine('* a peer disconnected','sys');
+      else chatLine('* peer disconnected');
+    };
   }
+
+  /* -------- Lobby chat + player list -------- */
+  function addLobbyChatLine(text, cls){
+    const log=document.getElementById('lobbyChatLog'); if(!log) return;
+    const div=document.createElement('div');
+    if(cls) div.className=cls;
+    div.textContent=text;
+    log.appendChild(div);
+    while(log.children.length>200) log.removeChild(log.firstChild);
+    log.scrollTop = log.scrollHeight;
+  }
+  function refreshLobbyMP(){
+    const el=document.getElementById('lobbyPlayers'); if(!el) return;
+    const myName = (document.getElementById('pname')?.value || state.me.name || 'Solo');
+    const parts = [`<span class="you">${esc(myName)} (you)</span>`];
+    for(const id in state.lobbyPeers){
+      parts.push(esc(state.lobbyPeers[id].name||id.slice(0,4)));
+    }
+    el.innerHTML = 'Players: ' + parts.join(', ');
+  }
+  function sendLobbyChat(){
+    const inp=document.getElementById('lobbyChatInput'); if(!inp) return;
+    const text=(inp.value||'').trim(); if(!text) return;
+    inp.value='';
+    const myName = (document.getElementById('pname')?.value || state.me.name || 'Solo');
+    addLobbyChatLine(myName+': '+text);
+    try{ Net.broadcast({kind:'lobby_chat', name: myName, text}); }catch(_){}
+  }
+  document.getElementById('lobbyChatInput')?.addEventListener('keydown', e=>{
+    if(e.key==='Enter'){ e.preventDefault(); sendLobbyChat(); }
+  });
+  refreshLobbyMP();
 
   // teams are set in the lobby and broadcast on join only; no in-game changes
 
