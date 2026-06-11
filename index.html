@@ -1705,7 +1705,9 @@ const Game=(()=>{
         while(diff<-Math.PI)diff+=Math.PI*2;
         bot.rot+=Math.max(-stats.turn,Math.min(stats.turn,diff));
         const dist=Math.sqrt(bestD);
-        const close=isShip?500:300;
+        // Checkpoints are fly-through, not loiter — keep thrusting until you pass them.
+        const isCheckpoint = state.gameMode==='race' && !isShip;
+        const close = isShip ? 500 : (isCheckpoint ? 0 : 300);
         const thrustMult = danger?1.0 : 0.7;
         if((dist>close || danger) && Math.abs(diff)<0.7){
           bot.vx+=Math.cos(bot.rot)*stats.thrust*thrustMult;
