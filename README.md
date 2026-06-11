@@ -56,6 +56,15 @@ magick icon.svg -resize 180x180 apple-touch-icon.png
 
 Drop the resulting `apple-touch-icon.png` next to `index.html` and iOS will pick it up automatically (the `<link>` tag is already in the head).
 
+## Known issues / brainstorm
+
+- **Combined thrust + turn touch control feels weird.** On a single virtual stick, turning and thrusting are coupled — you can't gently steer while coasting, and you can't thrust straight without committing to a heading from the stick angle. Some directions to consider:
+  - Split into two zones: left half = turn-only (rotate to where you drag), right side already has fire/boost — could add a dedicated thrust button.
+  - Tilt-to-steer (DeviceOrientation) for turn, on-screen button for thrust.
+  - Tap-to-aim: tap anywhere in the play area to set a target heading; hold to thrust toward it.
+  - "Lunar Lander" style: separate small thrust pedal + rotate buttons (less elegant but unambiguous).
+  - Keep the joystick but decouple magnitude: any deflection = full thrust, angle = turn target (so light touches still steer hard).
+
 ## License
 
 [MIT](LICENSE).
