@@ -1708,12 +1708,19 @@ const Game=(()=>{
         // Checkpoints are fly-through, not loiter — keep thrusting until you pass them.
         const isCheckpoint = state.gameMode==='race' && !isShip;
         const close = isShip ? 500 : (isCheckpoint ? 0 : 300);
-        const thrustMult = danger?1.0 : 0.7;
+        const inRace = state.gameMode==='race';
+        // Race: full throttle and burn boost on aligned straightaways. Non-race keeps 0.7 patrol speed.
+        const wantBoost = inRace && !danger && bot.boost>0 && bot.boostMax>0 && Math.abs(diff)<0.25;
+        const baseMult = (inRace || danger) ? 1.0 : 0.7;
+        const thrustMult = baseMult * (wantBoost?2.2:1.0);
         if((dist>close || danger) && Math.abs(diff)<0.7){
           bot.vx+=Math.cos(bot.rot)*stats.thrust*thrustMult;
           bot.vy+=Math.sin(bot.rot)*stats.thrust*thrustMult;
           botThrust=true;
+          if(wantBoost) bot.boost = Math.max(0, bot.boost - bot.boostMax/(60*3));
         }
+        if(!wantBoost && bot.boost<bot.boostMax) bot.boost = Math.min(bot.boostMax, bot.boost + bot.boostMax/(60*8));
+        bot.boosting=wantBoost;
         // In race mode the bot's target is the next checkpoint — firing at it is pointless.
         const targetingCheckpoint = state.gameMode==='race' && !isShip && gotTarget;
         // "no combat" race only suppresses racer-vs-racer fire; pirates are always fair game.
@@ -1757,7 +1764,9 @@ const Game=(()=>{
       }
       bot.thrusting=botThrust;
       bot.fireCd=Math.max(0,bot.fireCd-1);
-      const sp=Math.hypot(bot.vx,bot.vy); if(sp>8){ bot.vx*=8/sp; bot.vy*=8/sp; }
+      // Boosting bots get the same high-speed ceiling the player has when boosting.
+      const maxSp = bot.boosting ? 16 : 8;
+      const sp=Math.hypot(bot.vx,bot.vy); if(sp>maxSp){ bot.vx*=maxSp/sp; bot.vy*=maxSp/sp; }
     }
 
     // NPC spawn timer (only if at least one platform exists)
