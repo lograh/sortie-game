@@ -2,7 +2,7 @@
 
 A browser-based asteroids-style space game. Single HTML file — no build step, no install.
 
-**Play it:** open `index.html` in any modern browser, or visit the [hosted version](https://YOUR-USER.github.io/sortie-game/) (replace once GitHub Pages is on).
+**Play it:** open `index.html` in any modern browser, or visit the [hosted version](https://lograh.github.io/sortie-game/).
 
 Works on desktop, phones, and iPads.
 
