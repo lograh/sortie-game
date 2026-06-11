@@ -1274,6 +1274,27 @@ const Game=(()=>{
     }
     return [dx, dy];
   }
+  // Steer around radioactive nebulae in the forward cone. If our target is inside the
+  // nebula we have to go in anyway (e.g. a checkpoint that spawned there), so skip it.
+  function avoidRadiation(bot, dx, dy, tx, ty){
+    const RANGE=400;
+    for(const n of state.nebulae){
+      if(!n.radioactive) continue;
+      if(tx!==undefined && Math.hypot(tx-n.x, ty-n.y) < n.r) continue;
+      const adx=bot.x-n.x, ady=bot.y-n.y;
+      const d2=adx*adx+ady*ady;
+      const cutoff=RANGE+n.r;
+      if(d2 > cutoff*cutoff) continue;
+      const d=Math.sqrt(d2)||1;
+      if(((-adx)*dx + (-ady)*dy) <= 0) continue;
+      const surfDist = Math.max(0, d - n.r);
+      if(surfDist > RANGE) continue;
+      const repel = 700 * (1 - surfDist/RANGE);
+      dx += adx/d * repel;
+      dy += ady/d * repel;
+    }
+    return [dx, dy];
+  }
   // Predict where to aim so a bullet fired now intersects a moving target.
   // Solves in the shooter's reference frame: bullet leaves at bulletSpeed, target
   // starts at relative position rp with relative velocity rv. Find smallest t>0
@@ -1743,6 +1764,7 @@ const Game=(()=>{
         let danger;
         [dx,dy,danger]=avoidWells(bot,dx,dy);
         [dx,dy]=avoidAsteroids(bot,dx,dy);
+        [dx,dy]=avoidRadiation(bot,dx,dy,tx,ty);
         const desired=Math.atan2(dy,dx);
         let diff=desired-bot.rot;
         while(diff>Math.PI)diff-=Math.PI*2;
@@ -1792,6 +1814,7 @@ const Game=(()=>{
         let dx=Math.cos(bot.rot), dy=Math.sin(bot.rot), danger;
         [dx,dy,danger]=avoidWells(bot,dx,dy);
         [dx,dy]=avoidAsteroids(bot,dx,dy);
+        [dx,dy]=avoidRadiation(bot,dx,dy);
         if(danger){
           const desired=Math.atan2(dy,dx);
           let diff=desired-bot.rot;
@@ -1845,6 +1868,7 @@ const Game=(()=>{
       let dx=tx-pr.x, dy=ty-pr.y, danger;
       [dx,dy,danger]=avoidWells(pr,dx,dy);
       [dx,dy]=avoidAsteroids(pr,dx,dy);
+      [dx,dy]=avoidRadiation(pr,dx,dy,tx,ty);
       const desired=Math.atan2(dy,dx);
       let diff=desired-pr.rot;
       while(diff>Math.PI)diff-=Math.PI*2;
