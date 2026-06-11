@@ -182,7 +182,7 @@
             <button onclick="Game.startSolo()">Start Game</button>
           </div>
           <hr>
-          <div class="row dim">LAN / Internet — WebRTC handshake. Host taps Create Offer, taps Share, sends link. Friend opens link, taps Accept, taps Share, sends link back. Host pastes the answer link and taps Accept Pasted Answer.</div>
+          <div class="row dim">LAN / Internet — WebRTC handshake. Host taps Create Offer (link auto-copies); send it to friend any way you like. Friend opens link, taps Accept Pasted Offer, sends their answer link back. Host pastes it and taps Accept Pasted Answer. Tip on iOS: send the link fast — Safari may drop the connection if backgrounded too long.</div>
           <div class="row"><button onclick="Game.makeOffer()">Create Offer</button> <button onclick="Game.acceptOffer()">Accept Pasted Offer</button> <button onclick="Game.acceptAnswer()">Accept Pasted Answer</button></div>
           <div class="row"><button onclick="Game.sdpCopy()">Copy</button> <button onclick="Game.sdpPaste()">Paste</button> <button onclick="Game.sdpShare()">Share Link</button></div>
           <textarea id="sdp" rows="3" placeholder="Paste offer/answer link or SDP here"></textarea>
@@ -3596,6 +3596,9 @@ const Game=(()=>{
     if(!el) return;
     el.style.display='block';
     el.textContent = url;
+    // Best-effort auto-copy so the user doesn't strictly need the Share button
+    // (which would background Safari and risk iOS dropping the WebRTC connection).
+    try { navigator.clipboard.writeText(url); } catch(_) {}
   }
   function clearShareUrl(){
     lastShareUrl=null;
@@ -3603,16 +3606,34 @@ const Game=(()=>{
     if(el){ el.style.display='none'; el.textContent=''; }
   }
 
-  function setLobbyStatus(t){
+  // Buffer status updates while the tab is hidden so the user doesn't see noisy
+  // intermediate states the moment they return from the share sheet.
+  let _pendingStatus = null;
+  let _wasHiddenSince = 0;
+  function setLobbyStatusReal(t){
     const el=document.getElementById('lobbyStatus'); if(el) el.textContent=t;
   }
+  function setLobbyStatus(t){
+    if(document.visibilityState === 'hidden'){ _pendingStatus = t; return; }
+    setLobbyStatusReal(t);
+  }
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState === 'hidden') _wasHiddenSince = Date.now();
+    else if(_pendingStatus){ setLobbyStatusReal(_pendingStatus); _pendingStatus = null; }
+  });
   // Surface real ICE/peer connection state so users know what's actually happening.
   function watchPC(pc, who){
     pc.oniceconnectionstatechange = ()=>{
       const s = pc.iceConnectionState;
+      const wasRecentlyHidden = (Date.now() - _wasHiddenSince) < 30000;
       if(s==='checking') setLobbyStatus(who+': checking connection...');
       else if(s==='connected' || s==='completed') setLobbyStatus(who+': linked. Opening data channel...');
-      else if(s==='failed') setLobbyStatus(who+': connection failed — NAT/firewall? Try same network, or add a TURN server.');
+      else if(s==='failed'){
+        const why = (document.visibilityState==='hidden' || wasRecentlyHidden)
+          ? '(iOS likely paused the tab while you were sharing — tap Create Offer again to retry)'
+          : '(NAT/firewall? Try same network, or add a TURN server.)';
+        setLobbyStatus(who+': connection failed '+why);
+      }
       else if(s==='disconnected') setLobbyStatus(who+': disconnected.');
     };
   }
