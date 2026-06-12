@@ -1135,6 +1135,15 @@ const Game=(()=>{
         ownerId: from
       };
       startPlaying();
+    } else if(m.kind==='pickup_spawn'){
+      // Someone killed an NPC and is broadcasting the resulting loot. Dedup by id.
+      if(!state.pickups.some(pk => pk.id === m.id)){
+        state.pickups.push({
+          id: m.id, x: m.x, y: m.y,
+          vx: m.vx||0, vy: m.vy||0,
+          rot: 0, type: m.type, life: m.life || 3600
+        });
+      }
     } else if(m.kind==='entity_adopt'){
       // Another peer adopted the orphaned entities — sync our local _ownerId so we don't double-claim.
       const ids = Array.isArray(m.ids) ? m.ids : [];
@@ -1769,14 +1778,29 @@ const Game=(()=>{
     if(i>=0) idArr.splice(i,1);
     Net.broadcast({kind:'npc_despawn', npcId:id});
   }
-  function spawnPickup(x,y){
+  function spawnPickup(x, y, broadcast){
+    const id = 'pk_'+rid();
     const keys=Object.keys(UNIQUE_ITEMS);
     const type=keys[Math.floor(Math.random()*keys.length)];
-    state.pickups.push({
-      x,y,
-      vx:(Math.random()-0.5)*0.4, vy:(Math.random()-0.5)*0.4,
-      rot:0, type, life:3600 // 60s @ 60fps
-    });
+    const vx=(Math.random()-0.5)*0.4, vy=(Math.random()-0.5)*0.4;
+    const life=3600; // 60s @ 60fps
+    state.pickups.push({id, x, y, vx, vy, rot:0, type, life});
+    if(broadcast){
+      try { Net.broadcast({kind:'pickup_spawn', id, x, y, vx, vy, type, life}); } catch(_){}
+    }
+  }
+  // Am I the peer responsible for spawning loot when `shooter` killed `victim`?
+  // Killer-spawns wins because it lets the killer pick up at zero latency.
+  function iSpawnPickupFor(shooter, victim){
+    if(shooter){
+      if(shooter.id === state.me.id) return true;
+      if(state.aiIds.includes(shooter.id)) return true;
+      if(state.pirateIds.includes(shooter.id)) return true;
+      if(state.traderIds.includes(shooter.id)) return true;
+      return false;
+    }
+    // No shooter (e.g., asteroid collision) — fall back to the victim's owner.
+    return victim && victim._ownerId === state.me.id;
   }
   function stepTraderDock(){
     const me=state.players[state.me.id];
@@ -2550,9 +2574,14 @@ const Game=(()=>{
           if(p.id===state.me.id){ Sound.hit(); spawnHitArc(p,b); }
           if(p.hp<=0){
             if(p.pirate){
+              // Only one peer should spawn the loot. Killer-spawns so they can pick it up
+              // immediately at zero latency; everyone else gets it via the broadcast.
+              const iSpawn = iSpawnPickupFor(shooter, p);
               // king drops multiple pickups + ends the king event (king is one-shot)
               if(p.king){
-                for(let i=0;i<5;i++){ spawnPickup(p.x+(Math.random()-0.5)*40, p.y+(Math.random()-0.5)*40); }
+                if(iSpawn){
+                  for(let i=0;i<5;i++){ spawnPickup(p.x+(Math.random()-0.5)*40, p.y+(Math.random()-0.5)*40, true); }
+                }
                 state.kingActive=false;
                 state.piratesKilled=0;
                 killFeed(shooter?(shooter.name+' ✗ ☠ Pirate King — JACKPOT'):'Pirate King destroyed');
@@ -2560,7 +2589,7 @@ const Game=(()=>{
                 spawnExplosion(p.x,p.y,40); Sound.explosion();
                 despawnNpc(state.pirateIds,p.id);
               } else {
-                spawnPickup(p.x,p.y);
+                if(iSpawn) spawnPickup(p.x,p.y, true);
                 state.piratesKilled++;
                 if(shooter && !shooter.pirate){ killFeed(shooter.name+' ✗ '+p.name+' (loot!)'); }
                 else killFeed(p.name+' destroyed');
