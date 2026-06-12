@@ -1412,13 +1412,13 @@ const Game=(()=>{
     }
     return total;
   }
-  // Count components by item-key (ignoring core).
+  // Count components by item-key (ignoring core). Unique modules use their unique key
+  // so the diff matches the same keys used in inventory (set by removeAt).
   function componentCount(g){
     const m={};
     for(let y=0;y<9;y++)for(let x=0;x<9;x++){
       const c=g[y][x]; if(!c || c.type==='core') continue;
-      let k=c.type;
-      if(c.type==='gun') k='gun_'+(c.variant||'basic');
+      const k = c.unique || (c.type==='gun' ? 'gun_'+(c.variant||'basic') : c.type);
       m[k]=(m[k]||0)+1;
     }
     return m;
@@ -3263,6 +3263,13 @@ const Game=(()=>{
     const me=state.players[state.me.id]; if(!me) return;
     const d=state.shipLibrary[idx]; if(!d) return;
     const { need, leftover } = diffWithInventory(me.layout, d.layout, me.inventory);
+    // Unique modules can't be purchased — they only come from drops/traders.
+    const missingUniques = Object.keys(need).filter(k => UNIQUE_ITEMS[k]);
+    if(missingUniques.length){
+      const names = missingUniques.map(k => UNIQUE_ITEMS[k].name + (need[k]>1?(' ×'+need[k]):'')).join(', ');
+      chatLine('* need '+names+' — uniques aren\'t sold at hubs');
+      return;
+    }
     const isFree = Object.keys(need).length===0;
     if(isFree){
       chatLine('* applied design #'+(idx+1)+' (free — drew parts from inventory)');
@@ -3358,20 +3365,24 @@ const Game=(()=>{
         const d=state.shipLibrary[i];
         const { need } = diffWithInventory(me.layout, d.layout, me.inventory);
         const isFree=Object.keys(need).length===0;
+        const missingUniques = Object.keys(need).filter(k => UNIQUE_ITEMS[k]);
         const matNeed=diffMatCost(need);
         const credNeed=diffCredCost(need);
         const matStr = isFree ? 'free' : (Object.entries(matNeed).filter(([m,n])=>n>0).map(([m,n])=>n+m[0].toUpperCase()).join(' ') || 'free');
-        const afford = canAfford(me,matNeed);
-        const affordCr = (me.creds||0) >= credNeed;
+        const afford = canAfford(me,matNeed) && !missingUniques.length;
+        const affordCr = (me.creds||0) >= credNeed && !missingUniques.length;
         const isCurrent=d.hash===myHash;
         // Free button collapses Mat/Cr into one when no parts are needed.
         const buttons = isFree
           ? `<button ${isCurrent?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i},'mat')" style="padding:3px 8px;min-height:0;font-size:11px" title="No new parts needed">Apply (free)</button>`
           : `<button ${(!afford||isCurrent)?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i},'mat')" style="padding:3px 8px;min-height:0;font-size:11px" title="Pay materials for missing parts">Apply (Mat)</button>
              <button ${(!affordCr||isCurrent)?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i},'cr')" style="padding:3px 8px;min-height:0;font-size:11px" title="Pay credits for missing parts">Apply (${credNeed}cr)</button>`;
-        const costLine = isFree
+        const uniqueWarn = missingUniques.length
+          ? '<br><span style="color:#fc6">needs ' + missingUniques.map(k=>UNIQUE_ITEMS[k].name+(need[k]>1?(' ×'+need[k]):'')).join(', ') + ' (drop/trader only)</span>'
+          : '';
+        const costLine = (isFree
           ? '<span style="color:#5f8">free — parts come from your ship + inventory</span>'
-          : `+${matStr} <span style="color:#789">or</span> +${credNeed}cr`;
+          : `+${matStr} <span style="color:#789">or</span> +${credNeed}cr`) + uniqueWarn;
         lib+=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:5px;border:1px solid ${isCurrent?'#fd6':'#234'};border-radius:4px;background:${isCurrent?'rgba(40,32,4,0.4)':'rgba(8,16,24,0.5)'}">
           ${miniLayoutHtml(d.layout)}
           <div style="flex:1 1 0;min-width:0;font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis">
