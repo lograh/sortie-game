@@ -412,6 +412,15 @@
       <input type="range" id="setVolSfx" min="0" max="1" step="0.05" style="flex:1">
       <span id="setVolSfxVal" style="min-width:36px;text-align:right">100%</span>
     </div>
+    <h4 style="color:var(--ui-text-highlight);margin:14px 0 6px 0;border-bottom:1px solid var(--ui-divider);padding-bottom:4px">Touch joystick</h4>
+    <div class="row">Max radius
+      <input type="range" id="setTouchRadius" min="30" max="120" step="5" style="flex:1">
+      <span id="setTouchRadiusVal" style="min-width:48px;text-align:right">60 px</span>
+    </div>
+    <div class="row">Thrust threshold
+      <input type="range" id="setTouchThrust" min="0.1" max="0.9" step="0.05" style="flex:1">
+      <span id="setTouchThrustVal" style="min-width:48px;text-align:right">55%</span>
+    </div>
     <h4 style="color:var(--ui-text-highlight);margin:14px 0 6px 0;border-bottom:1px solid var(--ui-divider);padding-bottom:4px">Controls</h4>
     <div class="dim" style="font-size:11px;margin-bottom:6px">Click a slot then press a key. Your ship won't respond to keys while a slot is highlighted.</div>
     <div id="setBindings"></div>
@@ -1076,6 +1085,7 @@ const Game=(()=>{
     data: {
       video: { colorblind:'off', brightness:1.0, bgStars:true, zoom:1.0 },
       audio: { master:1.0, music:1.0, sfx:1.0 },
+      touch: { maxRadius:60, thrustThreshold:0.55 },
       bindings: {
         thrust: ['KeyW','ArrowUp'],
         left:   ['KeyA','ArrowLeft'],
@@ -1097,13 +1107,22 @@ const Game=(()=>{
           const loaded = JSON.parse(s);
           if(loaded.video) Object.assign(this.data.video, loaded.video);
           if(loaded.audio) Object.assign(this.data.audio, loaded.audio);
+          if(loaded.touch) Object.assign(this.data.touch, loaded.touch);
           if(loaded.bindings) Object.assign(this.data.bindings, loaded.bindings);
         }
       } catch(_){}
       this.applyAll();
     },
     save(){ try{ localStorage.setItem(this.KEY, JSON.stringify(this.data)); }catch(_){} },
-    applyAll(){ this.applyVideo(); this.applyAudio(); },
+    applyAll(){ this.applyVideo(); this.applyAudio(); this.applyTouch(); },
+    applyTouch(){
+      // Resize the floating joystick element to wrap the configured max radius.
+      // 14px of padding past the outer edge keeps the thumb pad readable.
+      const max = this.data.touch.maxRadius || 60;
+      const dim = (max + 14) * 2;
+      const j = document.getElementById('joystick');
+      if(j){ j.style.width = dim+'px'; j.style.height = dim+'px'; }
+    },
     applyVideo(){
       // Apply brightness to the whole stage (game canvas + HUD + topbar + lobby/hub modals).
       // Settings modal lives outside #stage and so stays at full brightness — always readable.
@@ -2526,8 +2545,9 @@ const Game=(()=>{
         if(state.joy.active){
           const mag=Math.hypot(state.joy.x,state.joy.y);
           // Two-band stick: small deflection turns only; pulling past THRUST_ON ramps thrust.
-          // Gives "barely past the line = ~10% thrust" feel.
-          const TURN_DEAD=0.15, THRUST_ON=0.55;
+          // Threshold is user-tunable via Settings → Touch.
+          const TURN_DEAD=0.15;
+          const THRUST_ON = Settings.data.touch?.thrustThreshold ?? 0.55;
           if(mag>TURN_DEAD){
             const ang=Math.atan2(-state.joy.y,state.joy.x); // screen Y is down, world Y is up
             let diff=ang-me.rot;
@@ -4866,6 +4886,10 @@ const Game=(()=>{
     document.getElementById('setBgStars').checked = Settings.data.video.bgStars;
     document.getElementById('setZoom').value = Settings.data.video.zoom || 1;
     document.getElementById('setZoomVal').textContent = Number(Settings.data.video.zoom||1).toFixed(2)+'×';
+    document.getElementById('setTouchRadius').value = Settings.data.touch?.maxRadius || 60;
+    document.getElementById('setTouchRadiusVal').textContent = (Settings.data.touch?.maxRadius || 60)+' px';
+    document.getElementById('setTouchThrust').value = Settings.data.touch?.thrustThreshold ?? 0.55;
+    document.getElementById('setTouchThrustVal').textContent = Math.round((Settings.data.touch?.thrustThreshold ?? 0.55)*100)+'%';
     document.getElementById('setVolMaster').value = Settings.data.audio.master;
     document.getElementById('setVolMusic').value  = Settings.data.audio.music;
     document.getElementById('setVolSfx').value    = Settings.data.audio.sfx;
@@ -4915,6 +4939,18 @@ const Game=(()=>{
       Settings.data.video.zoom = v;
       $('setZoomVal').textContent = v.toFixed(2)+'×';
       Settings.save();   // rendering reads the setting live each frame; nothing else to apply.
+    });
+    $('setTouchRadius')?.addEventListener('input', e => {
+      const v = parseInt(e.target.value, 10);
+      Settings.data.touch.maxRadius = v;
+      $('setTouchRadiusVal').textContent = v+' px';
+      Settings.applyTouch(); Settings.save();
+    });
+    $('setTouchThrust')?.addEventListener('input', e => {
+      const v = parseFloat(e.target.value);
+      Settings.data.touch.thrustThreshold = v;
+      $('setTouchThrustVal').textContent = Math.round(v*100)+'%';
+      Settings.save();   // flight loop reads it each tick.
     });
     $('setVolMaster')?.addEventListener('input', e => {
       const v = parseFloat(e.target.value); Settings.data.audio.master = v;
@@ -5632,11 +5668,14 @@ const Game=(()=>{
   const joyEl=document.getElementById('joystick');
   const stickEl=joyEl.querySelector('.stick');
   function joyShow(sx,sy){
-    joyEl.style.left=(sx-70)+'px'; joyEl.style.top=(sy-70)+'px';
+    // Half the joystick element's width = where it should be anchored to center on the touch.
+    const half = (joyEl.offsetWidth || 140) / 2;
+    joyEl.style.left=(sx-half)+'px'; joyEl.style.top=(sy-half)+'px';
     joyEl.style.display='block';
   }
   function joyMove(dx,dy){
-    const max=60; const m=Math.hypot(dx,dy);
+    const max = Settings.data.touch?.maxRadius || 60;
+    const m=Math.hypot(dx,dy);
     const k=m>max?max/m:1;
     stickEl.style.transform='translate('+(dx*k)+'px,'+(dy*k)+'px)';
     state.joy.x=Math.max(-1,Math.min(1,dx/max));
