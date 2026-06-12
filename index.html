@@ -1086,6 +1086,43 @@ const Game=(()=>{
     }
     return total;
   }
+  // Count components by item-key (ignoring core).
+  function componentCount(g){
+    const m={};
+    for(let y=0;y<9;y++)for(let x=0;x<9;x++){
+      const c=g[y][x]; if(!c || c.type==='core') continue;
+      let k=c.type;
+      if(c.type==='gun') k='gun_'+(c.variant||'basic');
+      m[k]=(m[k]||0)+1;
+    }
+    return m;
+  }
+  // Multiset of components needed to go from current layout to target (no refund for dropped parts).
+  function diffNeeded(current, target){
+    const cur=componentCount(current), tgt=componentCount(target);
+    const need={};
+    for(const k in tgt){
+      const delta = tgt[k] - (cur[k]||0);
+      if(delta > 0) need[k] = delta;
+    }
+    return need;
+  }
+  function diffMatCost(need){
+    const total={iron:0,silicon:0,carbon:0,rare:0};
+    for(const k in need){
+      const it=ITEMS[k]; if(!it) continue;
+      for(const [m,n] of Object.entries(it.cost)) total[m]=(total[m]||0)+n*need[k];
+    }
+    return total;
+  }
+  function diffCredCost(need){
+    let total=0;
+    for(const k in need){
+      const it=ITEMS[k]; if(!it) continue;
+      total += (it.credits||0) * need[k];
+    }
+    return total;
+  }
   function cloneLayout(g){
     const out=[];
     for(let y=0;y<9;y++){ const r=[]; for(let x=0;x<9;x++){ r.push(g[y][x]?{...g[y][x]}:null); } out.push(r); }
@@ -2763,14 +2800,19 @@ const Game=(()=>{
   function applyDesign(idx, how){
     const me=state.players[state.me.id]; if(!me) return;
     const d=state.shipLibrary[idx]; if(!d) return;
-    if(how==='cr'){
-      const credCost=layoutCreditCost(d.layout);
-      if((me.creds||0) < credCost){ chatLine('not enough credits for that design ('+credCost+'cr)'); return; }
+    const need = diffNeeded(me.layout, d.layout);
+    const isFree = Object.keys(need).length===0;
+    if(isFree){
+      chatLine('* applied design #'+(idx+1)+' (free — same components)');
+    } else if(how==='cr'){
+      const credCost=diffCredCost(need);
+      if((me.creds||0) < credCost){ chatLine('not enough credits ('+credCost+'cr)'); return; }
       me.creds -= credCost;
       chatLine('* applied design #'+(idx+1)+' for '+credCost+'cr');
     } else {
-      if(!canAfford(me,d.cost)){ chatLine('not enough materials for that design'); return; }
-      for(const m in d.cost) me.materials[m]-=d.cost[m];
+      const matCost=diffMatCost(need);
+      if(!canAfford(me,matCost)){ chatLine('not enough materials for that design'); return; }
+      for(const m in matCost) me.materials[m]=(me.materials[m]||0)-matCost[m];
       chatLine('* applied design #'+(idx+1));
     }
     me.layout=cloneLayout(d.layout);
@@ -2850,20 +2892,30 @@ const Game=(()=>{
       const myHash=layoutHash(me.layout);
       for(let i=state.shipLibrary.length-1;i>=0;i--){
         const d=state.shipLibrary[i];
-        const costStr=Object.entries(d.cost).filter(([m,n])=>n>0).map(([m,n])=>n+m[0].toUpperCase()).join(' ')||'free';
-        const credCost=layoutCreditCost(d.layout);
-        const afford=canAfford(me,d.cost);
-        const affordCr=(me.creds||0) >= credCost;
+        const need=diffNeeded(me.layout,d.layout);
+        const isFree=Object.keys(need).length===0;
+        const matNeed=diffMatCost(need);
+        const credNeed=diffCredCost(need);
+        const matStr = isFree ? 'free' : (Object.entries(matNeed).filter(([m,n])=>n>0).map(([m,n])=>n+m[0].toUpperCase()).join(' ') || 'free');
+        const afford = canAfford(me,matNeed);
+        const affordCr = (me.creds||0) >= credNeed;
         const isCurrent=d.hash===myHash;
+        // Free button collapses Mat/Cr into one when no parts are needed.
+        const buttons = isFree
+          ? `<button ${isCurrent?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i},'mat')" style="padding:3px 8px;min-height:0;font-size:11px" title="No new parts needed">Apply (free)</button>`
+          : `<button ${(!afford||isCurrent)?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i},'mat')" style="padding:3px 8px;min-height:0;font-size:11px" title="Pay materials for missing parts">Apply (Mat)</button>
+             <button ${(!affordCr||isCurrent)?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i},'cr')" style="padding:3px 8px;min-height:0;font-size:11px" title="Pay credits for missing parts">Apply (${credNeed}cr)</button>`;
+        const costLine = isFree
+          ? '<span style="color:#5f8">free — you already have the parts</span>'
+          : `+${matStr} <span style="color:#789">or</span> +${credNeed}cr`;
         lib+=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:5px;border:1px solid ${isCurrent?'#fd6':'#234'};border-radius:4px;background:${isCurrent?'rgba(40,32,4,0.4)':'rgba(8,16,24,0.5)'}">
           ${miniLayoutHtml(d.layout)}
           <div style="flex:1 1 0;min-width:0;font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis">
             <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">#${i+1} ${esc(d.author||'?')}${isCurrent?' <span style="color:#fd6">★</span>':''}</div>
-            <div class="dim" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${costStr} <span style="color:#789">or</span> ${credCost}cr</div>
+            <div class="dim" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${costLine}</div>
           </div>
           <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 auto">
-            <button ${(!afford||isCurrent)?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i},'mat')" style="padding:3px 8px;min-height:0;font-size:11px" title="Apply paying materials">Apply (Mat)</button>
-            <button ${(!affordCr||isCurrent)?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i},'cr')" style="padding:3px 8px;min-height:0;font-size:11px" title="Apply paying credits">Apply (${credCost}cr)</button>
+            ${buttons}
             <button class="bad" onclick="Game.deleteDesign(${i})" style="font-size:11px;padding:3px 6px;min-height:0">✕</button>
           </div>
         </div>`;
