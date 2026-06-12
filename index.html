@@ -1535,7 +1535,7 @@ const Game=(()=>{
     p.grace=180;
     state.players[state.me.id]=p;
     Net.broadcast({kind:'team',team:myTeam});
-    spawnBotsFromList(cfg.bots, cfg.isHost, cfg.totalRacers, cfg.ownerId || state.me.id);
+    spawnBotsFromList(cfg.bots, cfg.totalRacers);
     state.roundEndTick=mins>0?(mins*60*60):0;
     state.killGoal=goal;
     state.roundEnded=false;
@@ -1963,14 +1963,14 @@ const Game=(()=>{
       rot: Math.atan2(-ry, -rx),                  // face back toward c1
     };
   }
-  // Spawn bots from an authoritative spec list (built once by the host, broadcast in start_game).
-  // Each bot remembers its `_ownerId` — the player currently driving it. If that owner drops,
-  // a deterministic election (lowest-id surviving human) reassigns ownership.
-  function spawnBotsFromList(bots, isHost, totalRacers, ownerId){
+  // Spawn bots from an authoritative spec list (built once by the start presser, broadcast in start_game).
+  // Each bot has an `ownerId` in its spec; whichever peer's id matches adds it to aiIds and
+  // simulates it. On owner drop, a deterministic election reassigns the bot.
+  function spawnBotsFromList(bots, totalRacers){
     for(const b of (bots||[])){
       const bot = spawnPlayer(b.id, b.name, b.team||0);
       bot.ai=true; bot.aiCd=0;
-      bot._ownerId = ownerId || state.me.id;
+      bot._ownerId = b.ownerId || state.me.id;
       if(state.gameMode==='race' && state.raceCheckpoints.length>=2){
         const pose = raceStartPose(b.raceSlot ?? 1, totalRacers || 1);
         bot.x=pose.x; bot.y=pose.y; bot.rot=pose.rot;
@@ -1982,7 +1982,7 @@ const Game=(()=>{
       bot.spawnX=bot.x; bot.spawnY=bot.y;
       bot.grace=180;
       state.players[b.id]=bot;
-      if(isHost) state.aiIds.push(b.id);
+      if(bot._ownerId === state.me.id) state.aiIds.push(b.id);
     }
   }
 
@@ -4013,11 +4013,13 @@ const Game=(()=>{
       for(const pid of playerIds) playerHubs[pid] = pickHubFor(pid, claimed);
     }
     // Authoritative bot specs — same ids/teams/positions ship to every peer.
+    // Round-robin owner assignment spreads AI simulation load across all humans.
     const bots = [];
     for(let i=0;i<aicount;i++){
       const id = 'ai_'+rid();
       const team = teamCount>0 ? (i%teamCount)+1 : 0;
-      const b = {id, name:'Bot-'+(i+1), team};
+      const ownerId = playerIds[i % playerIds.length];
+      const b = {id, name:'Bot-'+(i+1), team, ownerId};
       if(isRace){
         b.raceSlot = playerIds.length + i;
       } else if(state.platforms.length){
