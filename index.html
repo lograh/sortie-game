@@ -1135,6 +1135,9 @@ const Game=(()=>{
         ownerId: from
       };
       startPlaying();
+    } else if(m.kind==='pickup_taken'){
+      const idx = state.pickups.findIndex(pk => pk.id === m.id);
+      if(idx >= 0) state.pickups.splice(idx, 1);
     } else if(m.kind==='pickup_spawn'){
       // Someone killed an NPC and is broadcasting the resulting loot. Dedup by id.
       if(!state.pickups.some(pk => pk.id === m.id)){
@@ -1951,6 +1954,8 @@ const Game=(()=>{
           me.inventory=me.inventory||{};
           me.inventory[pk.type]=(me.inventory[pk.type]||0)+1;
           state.pickups.splice(i,1);
+          // Tell other peers it's claimed so their players can't grab it too.
+          try { Net.broadcast({kind:'pickup_taken', id: pk.id}); } catch(_){}
           chatLine('+'+UNIQUE_ITEMS[pk.type].name);
           Sound.dock();
         }
