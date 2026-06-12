@@ -612,7 +612,8 @@ const Game=(()=>{
     raceCountdown:0,        // ticks remaining; -1 = waiting on peers; >0 = counting down; 0 = racing
     racePeersReady:new Set(),
     pingTo:{},        // playerId → last measured RTT in ms
-    lobbyPeers:{},    // peerId → {name} for the pre-game lobby player list
+    lobbyPeers:{},    // peerId → {name} for the pre-game lobby player list (direct dc up)
+    pendingPeers:{},  // peerId → {} for peers we've heard of but haven't directly connected yet
     raceExpectedReadies:0,
     raceWaitStartTick:0,
     keys:{},
@@ -944,7 +945,8 @@ const Game=(()=>{
   /* -------- Networking (WebRTC mesh) -------- */
   const Net={
     peers:{},       // localPeerKey -> {pc,dc}
-    routes:{},      // remotePlayerId -> localPeerKey (learned from incoming `from` field)
+    routes:{},      // remotePlayerId -> localPeerKey (any incoming `from` — may be relayed)
+    directRoutes:{},// remotePlayerId -> localPeerKey (only set when lobby_join arrived directly)
     onMsg:(from,m)=>handleNetMsg(from,m),
     broadcast(m){
       const s=JSON.stringify({from:state.me.id,...m});
@@ -1064,7 +1066,10 @@ const Game=(()=>{
         if(added){ saveLibrary(); if(state.docked) renderHub(); }
       }
     } else if(m.kind==='lobby_join'){
+      // lobby_join only travels over a direct dc — receiving it means we're directly meshed.
       state.lobbyPeers[from]={name:m.name||'P-'+from.slice(0,3)};
+      delete state.pendingPeers[from];
+      if(viaPeerKey) Net.directRoutes[from] = viaPeerKey;
       if(typeof refreshLobbyMP==='function') refreshLobbyMP();
       if(typeof addLobbyChatLine==='function') addLobbyChatLine('* '+(m.name||from.slice(0,4))+' joined','sys');
     } else if(m.kind==='lobby_chat'){
@@ -1075,8 +1080,6 @@ const Game=(()=>{
         document.getElementById('gamemode').value = m.gameMode || 'deathmatch';
         document.getElementById('roundmin').value = m.mins ?? 10;
         document.getElementById('killgoal').value = m.goal ?? 0;
-        document.getElementById('aicount').value = m.aicount ?? 0;
-        const atc=document.getElementById('aiTeamCount'); if(atc) atc.value = m.aiTeamCount ?? 0;
         const ws=document.getElementById('worldSize'); if(ws && m.worldSize) ws.value = m.worldSize;
         const rc=document.getElementById('raceCombat'); if(rc) rc.checked = !!m.raceCombat;
         const rcp=document.getElementById('raceCheckpoints'); if(rcp) rcp.value = m.raceCheckpointsN || 6;
@@ -1084,13 +1087,26 @@ const Game=(()=>{
       } catch(_){}
       WORLD = m.worldSize || 16000;
       if(m.seed) genWorld((m.seed>>>0));
+      state.pendingStart = {
+        bots: m.bots || [],
+        playerHubs: m.playerHubs || {},
+        playerSlots: m.playerSlots || {},
+        totalRacers: m.totalRacers || 1,
+        isHost: false
+      };
       startPlaying();
     } else if(m.kind==='peer_list'){
       // Introducer is telling us about other peers we should auto-connect to.
       if(Array.isArray(m.ids)){
+        let added=false;
         for(const id of m.ids){
-          if(id && id!==state.me.id && !Net.routes[id]) autoOfferTo(id);
+          if(id && id!==state.me.id && !Net.directRoutes[id] && !state.pendingPeers[id]){
+            state.pendingPeers[id] = {};
+            added = true;
+            autoOfferTo(id);
+          }
         }
+        if(added && typeof refreshLobbyMP==='function') refreshLobbyMP();
       }
     } else if(m.kind==='signal_offer' || m.kind==='signal_answer'){
       // Dedup so floods don't loop.
@@ -1333,22 +1349,18 @@ const Game=(()=>{
     if(state.gameMode==='race'){
       state.raceCheckpoints = state.raceCheckpoints.slice(0, state._raceDesired);
     }
+    const cfg = state.pendingStart || { bots:[], playerHubs:{}, playerSlots:{}, totalRacers:1, isHost:true };
     const myTeam=Math.max(0,Math.min(5,parseInt(document.getElementById('myteam').value)||0));
     const p=spawnPlayer(state.me.id,state.me.name,myTeam);
     if(state.gameMode==='race' && state.raceCheckpoints.length>=2){
-      // arc grid: every racer equidistant from c1, within ±15° of the c1->c2 line
-      const aiN=Math.max(0,Math.min(12,parseInt(document.getElementById('aicount').value)||0));
-      const pose=raceStartPose(0, aiN+1);
+      const slot = (cfg.playerSlots && cfg.playerSlots[state.me.id]!==undefined) ? cfg.playerSlots[state.me.id] : 0;
+      const pose = raceStartPose(slot, cfg.totalRacers || 1);
       p.x=pose.x; p.y=pose.y; p.vx=0; p.vy=0; p.rot=pose.rot;
       p.checkpoint=0; p.lap=0; p.raceTime=0;
-    } else {
-      // Hash-based hub pick + linear-probe so player and all bots get distinct hubs
-      // (works for any total ≤ platform count, currently 24).
-      state._claimedHubs = [];
-      if(state.platforms.length){
-        const hub=state.platforms[pickHubFor(state.me.id, state._claimedHubs)];
-        p.x=hub.x; p.y=hub.y; p.vx=0; p.vy=0;
-      }
+    } else if(state.platforms.length){
+      const hubIdx = (cfg.playerHubs && cfg.playerHubs[state.me.id]!==undefined) ? cfg.playerHubs[state.me.id] : 0;
+      const hub = state.platforms[hubIdx];
+      p.x=hub.x; p.y=hub.y; p.vx=0; p.vy=0;
     }
     const safe = nudgeOutOfRadiation(p.x, p.y);
     p.x = safe.x; p.y = safe.y;
@@ -1356,7 +1368,7 @@ const Game=(()=>{
     p.grace=180;
     state.players[state.me.id]=p;
     Net.broadcast({kind:'team',team:myTeam});
-    spawnAIs();
+    spawnBotsFromList(cfg.bots, cfg.isHost, cfg.totalRacers);
     state.roundEndTick=mins>0?(mins*60*60):0;
     state.killGoal=goal;
     state.roundEnded=false;
@@ -1784,31 +1796,25 @@ const Game=(()=>{
       rot: Math.atan2(-ry, -rx),                  // face back toward c1
     };
   }
-  function spawnAIs(){
-    const n=Math.max(0,Math.min(12,parseInt(document.getElementById('aicount').value)||0));
-    const teamCount=Math.max(0,Math.min(5,parseInt(document.getElementById('aiTeamCount')?.value)||0));
-    for(let i=0;i<n;i++){
-      const id='ai_'+rid();
-      const team = teamCount>0 ? (i%teamCount)+1 : 0;
-      const bot=spawnPlayer(id,'Bot-'+(i+1),team);
+  // Spawn bots from an authoritative spec list (built once by the host, broadcast in start_game).
+  // Peers spawn the same entities into state.players, but only the host pushes onto state.aiIds
+  // so only the host actually simulates them.
+  function spawnBotsFromList(bots, isHost, totalRacers){
+    for(const b of (bots||[])){
+      const bot = spawnPlayer(b.id, b.name, b.team||0);
+      bot.ai=true; bot.aiCd=0;
       if(state.gameMode==='race' && state.raceCheckpoints.length>=2){
-        const pose=raceStartPose(i+1, n+1);
-        bot.x=pose.x; bot.y=pose.y;
-        bot.rot=pose.rot;
+        const pose = raceStartPose(b.raceSlot ?? 1, totalRacers || 1);
+        bot.x=pose.x; bot.y=pose.y; bot.rot=pose.rot;
         bot.checkpoint=0; bot.lap=0;
       } else {
-        const claimed = state._claimedHubs || (state._claimedHubs=[]);
-        const hub = state.platforms[pickHubFor(id, claimed)];
-        if(hub){
-          const a=Math.random()*Math.PI*2, r=hub.r+PLATFORM_DEFENSE+200+Math.random()*400;
-          bot.x=hub.x+Math.cos(a)*r; bot.y=hub.y+Math.sin(a)*r;
-        }
+        bot.x = b.x || 0;
+        bot.y = b.y || 0;
       }
       bot.spawnX=bot.x; bot.spawnY=bot.y;
       bot.grace=180;
-      bot.ai=true; bot.aiCd=0;
-      state.players[id]=bot;
-      state.aiIds.push(id);
+      state.players[b.id]=bot;
+      if(isHost) state.aiIds.push(b.id);
     }
   }
 
@@ -3801,21 +3807,54 @@ const Game=(()=>{
   function startSolo(){
     state.me.name=document.getElementById('pname').value||'Solo';
     try{ localStorage.setItem('sortie_name_v1', state.me.name); }catch(_){}
-    // Have any peers join us with the same settings & world.
-    // Apply lobby-chosen world size before any genWorld runs.
-    WORLD = parseInt(document.getElementById('worldSize')?.value)||16000;
     const havePeers = Object.keys(Net.peers||{}).length>0;
+    if(havePeers && !isMeshComplete()){
+      addLobbyChatLine('* mesh not yet complete — waiting for all peers to connect','sys');
+      return;
+    }
+    WORLD = parseInt(document.getElementById('worldSize')?.value)||16000;
+    const seed = state.worldSeed || ((Math.random()*0x7fffffff)>>>0);
+    if(!state.worldSeed) genWorld(seed);
+    const gameMode = document.getElementById('gamemode').value||'deathmatch';
+    const aicount = Math.max(0,Math.min(12,parseInt(document.getElementById('aicount').value)||0));
+    const teamCount = Math.max(0,Math.min(5,parseInt(document.getElementById('aiTeamCount').value)||0));
+    const isRace = gameMode==='race';
+    // Mesh is complete here, so state.lobbyPeers is the full peer list.
+    const playerIds = [state.me.id, ...Object.keys(state.lobbyPeers||{})];
+    const playerHubs = {}, playerSlots = {};
+    const claimed = [];
+    if(isRace){
+      let slot=0; for(const pid of playerIds) playerSlots[pid] = slot++;
+    } else if(state.platforms.length){
+      for(const pid of playerIds) playerHubs[pid] = pickHubFor(pid, claimed);
+    }
+    // Authoritative bot specs — same ids/teams/positions ship to every peer.
+    const bots = [];
+    for(let i=0;i<aicount;i++){
+      const id = 'ai_'+rid();
+      const team = teamCount>0 ? (i%teamCount)+1 : 0;
+      const b = {id, name:'Bot-'+(i+1), team};
+      if(isRace){
+        b.raceSlot = playerIds.length + i;
+      } else if(state.platforms.length){
+        const hubIdx = pickHubFor(id, claimed);
+        const hub = state.platforms[hubIdx];
+        const a = Math.random()*Math.PI*2, r = hub.r+PLATFORM_DEFENSE+200+Math.random()*400;
+        b.x = hub.x+Math.cos(a)*r;
+        b.y = hub.y+Math.sin(a)*r;
+      }
+      bots.push(b);
+    }
+    const totalRacers = playerIds.length + aicount;
+    state.pendingStart = { bots, playerHubs, playerSlots, totalRacers, isHost:true };
     if(havePeers){
-      const seed = state.worldSeed || ((Math.random()*0x7fffffff)>>>0);
-      if(!state.worldSeed) genWorld(seed);
       try {
         Net.broadcast({kind:'start_game',
           seed,
-          gameMode: document.getElementById('gamemode').value||'deathmatch',
+          gameMode,
           mins: parseInt(document.getElementById('roundmin').value)||0,
           goal: parseInt(document.getElementById('killgoal').value)||0,
-          aicount: parseInt(document.getElementById('aicount').value)||0,
-          aiTeamCount: parseInt(document.getElementById('aiTeamCount').value)||0,
+          bots, playerHubs, playerSlots, totalRacers,
           worldSize: WORLD,
           raceCombat: !!(document.getElementById('raceCombat')?.checked),
           raceCheckpointsN: parseInt(document.getElementById('raceCheckpoints')?.value)||6,
@@ -4108,8 +4147,8 @@ const Game=(()=>{
       delete Net.peers[peerId];
       // Drop any routes that pointed through this dead channel.
       for(const rid in Net.routes){ if(Net.routes[rid]===peerId) delete Net.routes[rid]; }
-      // No per-peer-to-from mapping tracked — clear the roster if the last channel closed.
-      if(!Object.keys(Net.peers).length) state.lobbyPeers={};
+      for(const rid in Net.directRoutes){ if(Net.directRoutes[rid]===peerId){ delete Net.directRoutes[rid]; delete state.lobbyPeers[rid]; }}
+      if(!Object.keys(Net.peers).length){ state.lobbyPeers={}; state.pendingPeers={}; }
       refreshLobbyMP();
       if(state.mode==='lobby') addLobbyChatLine('* a peer disconnected','sys');
       else chatLine('* peer disconnected');
@@ -4126,14 +4165,39 @@ const Game=(()=>{
     while(log.children.length>200) log.removeChild(log.firstChild);
     log.scrollTop = log.scrollHeight;
   }
+  function isMeshComplete(){
+    // Complete when no peers are pending an auto-handshake.
+    return Object.keys(state.pendingPeers||{}).length===0;
+  }
   function refreshLobbyMP(){
     const el=document.getElementById('lobbyPlayers'); if(!el) return;
     const myName = (document.getElementById('pname')?.value || state.me.name || 'Solo');
+    const directIds = Object.keys(state.lobbyPeers);
+    const pendingIds = Object.keys(state.pendingPeers||{});
     const parts = [`<span class="you">${esc(myName)} (you)</span>`];
-    for(const id in state.lobbyPeers){
-      parts.push(esc(state.lobbyPeers[id].name||id.slice(0,4)));
+    for(const id of directIds){
+      parts.push(esc(state.lobbyPeers[id].name||id.slice(0,4)) + ' <span style="color:#5f8">✓</span>');
     }
-    el.innerHTML = 'Players: ' + parts.join(', ');
+    for(const id of pendingIds){
+      parts.push('<span class="dim">'+esc(id.slice(0,4))+' …</span>');
+    }
+    let html = 'Players: ' + parts.join(', ');
+    if(directIds.length>0 || pendingIds.length>0){
+      const tag = pendingIds.length===0
+        ? '<span style="color:#5f8">mesh complete</span>'
+        : '<span style="color:#fc6">mesh forming — '+pendingIds.length+' peer'+(pendingIds.length>1?'s':'')+' connecting…</span>';
+      html += '<br><span class="dim" style="font-size:11px">'+tag+'</span>';
+    }
+    el.innerHTML = html;
+    // Disable Start until mesh is complete (only when there are any peers).
+    const startBtn = document.querySelector('button[onclick="Game.startSolo()"]');
+    if(startBtn){
+      const hasAnyPeer = directIds.length>0 || pendingIds.length>0;
+      const block = hasAnyPeer && !isMeshComplete();
+      startBtn.disabled = block;
+      startBtn.style.opacity = block ? '0.5' : '';
+      startBtn.title = block ? 'Waiting for all peers to mesh.' : '';
+    }
   }
   function sendLobbyChat(){
     const inp=document.getElementById('lobbyChatInput'); if(!inp) return;
