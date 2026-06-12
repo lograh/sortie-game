@@ -217,8 +217,7 @@
           <hr>
           <div class="row dim">LAN / Internet — WebRTC handshake. Host taps Create Offer (link auto-copies); send the link to your friend. When the friend opens the link the offer is accepted automatically — they get a <code>sortie-answer:</code> string. They send that back to the host, who taps Receive Answer and pastes. Never tap your own answer link — the new format prevents accidental link-taps from reloading your offer tab.</div>
           <div class="row"><button onclick="Game.makeOffer()">Create Offer</button> <button onclick="Game.openAnswerModal()">Receive Answer</button></div>
-          <div class="row"><button onclick="Game.sdpCopy()">Copy</button> <button onclick="Game.sdpPaste()">Paste</button> <button onclick="Game.sdpShare()">Share Link</button></div>
-          <textarea id="sdp" rows="3" placeholder="Paste offer/answer link or SDP here"></textarea>
+          <div class="row" id="sdpShareRow" style="display:none"><button onclick="Game.sdpCopy()">Copy</button> <button onclick="Game.sdpShare()">Share Link</button></div>
           <div id="sdpLink" class="row dim" style="font-size:11px;word-break:break-all;display:none"></div>
           <div class="row dim" id="lobbyStatus">Idle.</div>
           <div class="row dim" style="font-size:11px">Desktop: <span class="tag">W/A/S/D</span> · <span class="tag">Space</span> fire · <span class="tag">Shift</span> boost · <span class="tag">T</span> dock · <span class="tag">M</span> map · <span class="tag">1-6</span> chat. Race: <span class="tag">B</span> super boost · <span class="tag">G</span> gas cloud.</div>
@@ -3952,9 +3951,9 @@ const Game=(()=>{
   function showShareUrl(url){
     lastShareUrl = url;
     const el = document.getElementById('sdpLink');
-    if(!el) return;
-    el.style.display='block';
-    el.textContent = url;
+    if(el){ el.style.display='block'; el.textContent = url; }
+    const row = document.getElementById('sdpShareRow');
+    if(row) row.style.display = '';
     // Best-effort auto-copy so the user doesn't strictly need the Share button
     // (which would background Safari and risk iOS dropping the WebRTC connection).
     try { navigator.clipboard.writeText(url); } catch(_) {}
@@ -3963,6 +3962,8 @@ const Game=(()=>{
     lastShareUrl=null;
     const el=document.getElementById('sdpLink');
     if(el){ el.style.display='none'; el.textContent=''; }
+    const row = document.getElementById('sdpShareRow');
+    if(row) row.style.display = 'none';
   }
 
   // Buffer status updates while the tab is hidden so the user doesn't see noisy
@@ -4018,8 +4019,7 @@ const Game=(()=>{
       if(!e.candidate){
         const sdp = JSON.stringify(pc.localDescription);
         const url = shareUrlFor('offer', await packSdp(sdp));
-        document.getElementById('sdp').value = url;       // show URL, not raw SDP
-        showShareUrl(url);                                 // also displays + auto-copies
+        showShareUrl(url);
         setLobbyStatus(retry
           ? 'Link refreshed (iOS suspended us). Share THIS new link if you haven\'t connected yet.'
           : 'Offer link ready — copied to clipboard. Send it to your friend.');
@@ -4051,7 +4051,6 @@ const Game=(()=>{
         // Plain (non-URL) form so chat apps don't turn it into a clickable link.
         // The host MUST paste it, not tap it — otherwise they'd reload their own offer tab.
         const blob = 'sortie-answer:'+(await packSdp(sdp));
-        document.getElementById('sdp').value = blob;
         showShareUrl(blob);
         setLobbyStatus(retry
           ? 'Answer refreshed (iOS suspended us). Copy and send THIS new answer back.'
@@ -4063,9 +4062,10 @@ const Game=(()=>{
     pendingPC=pc;
     if(!retry) setLobbyStatus('Generating answer link...');
   }
-  async function acceptOffer(){
-    const raw = await extractSdp(document.getElementById('sdp').value, 'offer');
-    if(!raw){ setLobbyStatus('No valid offer in textarea — paste your friend\'s offer link first.'); return; }
+  async function acceptOffer(rawOfferSdp){
+    // Source priority: explicit arg from auto-accept path, else nothing (no UI input anymore).
+    const raw = rawOfferSdp || null;
+    if(!raw){ setLobbyStatus('No offer to accept — open the host\'s link to receive one.'); return; }
     handshakeStart = Date.now();
     handshakeKind = 'guest';
     cachedOfferSDP = raw;
@@ -4073,10 +4073,10 @@ const Game=(()=>{
   }
 
   async function acceptAnswer(){
-    // Underlying handler used by both the modal and (for back-compat) any direct call.
+    // Underlying handler used by the Receive Answer modal.
     // Returns true on success, false on any error.
     if(!pendingPC){ setLobbyStatus('No pending offer in this tab — create one first.'); return false; }
-    const src = document.getElementById('answerInput')?.value || document.getElementById('sdp').value;
+    const src = document.getElementById('answerInput')?.value || '';
     const raw = await extractSdp(src, 'answer');
     if(!raw){ setLobbyStatus('No valid answer — paste the sortie-answer string from your friend.'); return false; }
     let ans; try { ans = JSON.parse(raw); } catch(_) { setLobbyStatus('Answer is not valid SDP.'); return false; }
@@ -4136,22 +4136,13 @@ const Game=(()=>{
   });
 
   async function sdpCopy(){
-    const text = lastShareUrl || document.getElementById('sdp').value;
-    if(!text){ document.getElementById('lobbyStatus').textContent='Nothing to copy yet.'; return; }
-    try { await navigator.clipboard.writeText(text); document.getElementById('lobbyStatus').textContent='Copied to clipboard.'; }
-    catch(_) { document.getElementById('lobbyStatus').textContent='Copy blocked — long-press the textarea and copy manually.'; }
-  }
-  async function sdpPaste(){
-    try {
-      const t = await navigator.clipboard.readText();
-      if(!t){ document.getElementById('lobbyStatus').textContent='Clipboard is empty.'; return; }
-      document.getElementById('sdp').value = t;
-      document.getElementById('lobbyStatus').textContent='Pasted — now tap Accept Pasted Offer or Accept Pasted Answer.';
-    } catch(_) { document.getElementById('lobbyStatus').textContent='Paste blocked — long-press the textarea and paste manually.'; }
+    if(!lastShareUrl){ setLobbyStatus('Nothing to copy yet.'); return; }
+    try { await navigator.clipboard.writeText(lastShareUrl); setLobbyStatus('Copied to clipboard.'); }
+    catch(_) { setLobbyStatus('Copy blocked — long-press the link below and copy manually.'); }
   }
   async function sdpShare(){
-    const blob = lastShareUrl || document.getElementById('sdp').value;
-    if(!blob){ document.getElementById('lobbyStatus').textContent='Nothing to share yet — create or accept an offer first.'; return; }
+    const blob = lastShareUrl;
+    if(!blob){ setLobbyStatus('Nothing to share yet — create an offer first.'); return; }
     const isUrl = /^https?:\/\//.test(blob);
     if(navigator.share){
       try {
@@ -4164,21 +4155,20 @@ const Game=(()=>{
     await sdpCopy();
   }
 
-  // If the page was opened via a share link, prefill and (for offers) auto-accept.
+  // If the page was opened via a share link, auto-accept the offer.
   async function consumeInboundHash(){
     const h = location.hash || '';
     const m = h.match(/^#?(offer|answer)=([A-Za-z0-9_\-]+)/);
     if(!m) return;
     const j = await unpackSdp(m[2]);
     if(!j) return;
-    const ta = document.getElementById('sdp'); if(ta) ta.value = j;
     history.replaceState(null, '', location.pathname);
     if(m[1]==='offer'){
       setLobbyStatus('Offer received — accepting automatically...');
-      try { await acceptOffer(); } catch(_) { setLobbyStatus('Could not auto-accept the offer; check your connection and try again.'); }
+      try { await acceptOffer(j); } catch(_) { setLobbyStatus('Could not auto-accept the offer; check your connection and try again.'); }
     } else {
-      // Legacy: an answer URL. New flow uses the Receive Answer modal — point the user there.
-      setLobbyStatus('Answer received. Tap Receive Answer to finish connecting.');
+      // Legacy: an answer URL. The new flow uses the Receive Answer modal.
+      setLobbyStatus('Answer received via legacy link. Tap Receive Answer and paste the answer string instead.');
     }
   }
   consumeInboundHash();
@@ -4454,7 +4444,7 @@ const Game=(()=>{
   boostEl.addEventListener('pointercancel',()=>{ state.boostHeld=false; boostEl.classList.remove('on'); });
 
   return {
-    startSolo,makeOffer,acceptOffer,acceptAnswer,openAnswerModal,closeAnswerModal,pasteAnswerIntoModal,submitAnswerFromModal,sdpCopy,sdpPaste,sdpShare,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,
+    startSolo,makeOffer,acceptOffer,acceptAnswer,openAnswerModal,closeAnswerModal,pasteAnswerIntoModal,submitAnswerFromModal,sdpCopy,sdpShare,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,
     castVote,sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
     lobbySetPlace,lobbyBuilderClick,lobbyGunCfg,lobbySaveDesign,lobbyResetDesign,lobbyLoadDesign,
   };
