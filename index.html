@@ -236,7 +236,7 @@
           </div>
           <hr>
           <div class="row dim">LAN / Internet — WebRTC handshake. Host taps Create Offer (link auto-copies); send the link to your friend. When the friend opens the link the offer is accepted automatically — they get a <code>sortie-answer:</code> string. They send that back to the host, who taps Receive Answer and pastes.</div>
-          <div class="row"><button onclick="Game.makeOffer()">Create Offer</button> <button onclick="Game.openAnswerModal()">Receive Answer</button></div>
+          <div class="row"><button onclick="Game.makeOffer()">Create Offer</button> <button onclick="Game.openAnswerModal()">Receive Answer</button> <button class="bad" id="leaveMeshBtn" onclick="Game.leaveMesh()" style="display:none">Leave Mesh</button></div>
           <div class="row" id="sdpShareRow" style="display:none"><button onclick="Game.sdpCopy()">Copy</button> <button onclick="Game.sdpShare()">Share Link</button></div>
           <div id="sdpLink" class="row dim" style="font-size:11px;word-break:break-all;display:none"></div>
           <div class="row dim" id="lobbyStatus">Idle.</div>
@@ -1343,6 +1343,28 @@ const Game=(()=>{
     if(typeof refreshLobbyMP==='function') refreshLobbyMP();
     // Elect a new owner for any bots the dropped peer was driving.
     if(state.mode==='playing' && isAdopterFor(id)) adoptOrphanedEntities(id);
+  }
+
+  // Gracefully tear down every direct connection. Remote peers see clean dc.onclose
+  // events (no 30-second drop timeout) and immediately remove us from their roster.
+  function leaveMesh(){
+    if(!confirm('Disconnect from the mesh? Other players will see you leave.')) return;
+    // Closing each pc triggers our own dc.onclose handlers, which clean up Net.peers
+    // and the various routing tables. Doing this in a snapshot avoids mutation issues.
+    const peerKeys = Object.keys(Net.peers);
+    for(const k of peerKeys){
+      try { Net.peers[k].pc?.close(); } catch(_){}
+    }
+    // Belt and suspenders — if any onclose didn't fire, scrub the tables ourselves.
+    Net.peers = {};
+    Net.routes = {};
+    Net.directRoutes = {};
+    state.lobbyPeers = {};
+    state.pendingPeers = {};
+    state.meshViews = {};
+    state.peerLastSeen = {};
+    if(typeof refreshLobbyMP === 'function') refreshLobbyMP();
+    setLobbyStatus('Left the mesh. Use Create Offer to start a new session.');
   }
 
   function maybeGossipAbout(id){
@@ -4142,6 +4164,40 @@ const Game=(()=>{
     }
     requestAnimationFrame(loop);
   }
+  // Soft reset — return to lobby while keeping the WebRTC mesh and design library intact.
+  // Replaces the old `location.reload()` so a friend group can play match after match
+  // without redoing the handshake dance every time.
+  function resetForNextRound(){
+    state.mode = 'lobby';
+    state.roundEnded = false;
+    state.docked = false; state.dockedTrader = null;
+    state.players = {};
+    state.bullets = []; state.pickups = []; state.particles = [];
+    state.asteroids = []; state.platforms = [];
+    state.nebulae = []; state.gravWells = [];
+    state.stars = []; state.hits = []; state.pings = [];
+    state.pirateIds = []; state.aiIds = []; state.traderIds = [];
+    state.raceFinishOrder = []; state.raceFirstFinishTick = 0;
+    state.raceCheckpoints = []; state.raceCountdown = 0;
+    state.racePeersReady = new Set();
+    state.kingActive = false; state.piratesKilled = 0;
+    state.worldSeed = 0;
+    state.pendingStart = null;
+    state.killGoal = 0; state.roundEndTick = 0;
+    state.nearPlatform = null;
+    state.pendingVote = null;
+    // Net.peers / lobbyPeers / pendingPeers / meshViews / directRoutes left intact —
+    // that's the whole point: the mesh persists across matches.
+    document.body.classList.add('mode-lobby');
+    document.getElementById('lobby').style.display = 'block';
+    document.getElementById('endscreen').style.display = 'none';
+    document.getElementById('hub').style.display = 'none';
+    document.getElementById('vote').style.display = 'none';
+    document.getElementById('roundTimer').style.display = 'none';
+    document.getElementById('topbar')?.classList.remove('active');
+    if(typeof refreshLobbyMP === 'function') refreshLobbyMP();
+  }
+
   function endRound(){
     state.roundEnded=true;
     document.getElementById('roundTimer').style.display='none';
@@ -4162,7 +4218,7 @@ const Game=(()=>{
         const cls=p.id===state.me.id?'you':'';
         h+=`<tr class="${cls}"><td>${finished.length+i+1}</td><td>${esc(p.name)}</td><td>L${(p.lap||0)+1} cp${(p.checkpoint||0)+1}</td></tr>`;
       });
-      h+='</tbody></table><div class="row" style="margin-top:12px"><button onclick="location.reload()">Play again</button></div>';
+      h+='</tbody></table><div class="row" style="margin-top:12px"><button onclick="Game.resetForNextRound()">Back to lobby</button></div>';
       document.getElementById('endBody').innerHTML=h;
       document.getElementById('endscreen').style.display='block';
       chatLine('* race over');
@@ -4181,7 +4237,7 @@ const Game=(()=>{
       const cls=p.id===state.me.id?'you':'';
       h+=`<tr class="${cls}"><td>${i+1}</td><td>${esc(p.name)}</td><td>${p.team}</td><td>${k}</td><td>${d}</td><td>${kd}</td></tr>`;
     });
-    h+='</tbody></table><div class="row" style="margin-top:12px"><button onclick="location.reload()">Play again</button></div>';
+    h+='</tbody></table><div class="row" style="margin-top:12px"><button onclick="Game.resetForNextRound()">Back to lobby</button></div>';
     document.getElementById('endBody').innerHTML=h;
     document.getElementById('endscreen').style.display='block';
     chatLine('* round over');
@@ -4762,13 +4818,16 @@ const Game=(()=>{
     el.innerHTML = html;
     // Disable Start until mesh is complete (only when there are any peers).
     const startBtn = document.querySelector('button[onclick="Game.startSolo()"]');
+    const hasAnyPeer = directIds.length>0 || pendingIds.length>0;
     if(startBtn){
-      const hasAnyPeer = directIds.length>0 || pendingIds.length>0;
       const block = hasAnyPeer && !isMeshComplete();
       startBtn.disabled = block;
       startBtn.style.opacity = block ? '0.5' : '';
       startBtn.title = block ? 'Waiting for all peers to mesh.' : '';
     }
+    // Show Leave Mesh only when we actually have anyone to leave.
+    const leaveBtn = document.getElementById('leaveMeshBtn');
+    if(leaveBtn) leaveBtn.style.display = hasAnyPeer ? '' : 'none';
   }
   function sendLobbyChat(){
     const inp=document.getElementById('lobbyChatInput'); if(!inp) return;
@@ -4947,7 +5006,7 @@ const Game=(()=>{
   boostEl.addEventListener('pointercancel',()=>{ state.boostHeld=false; boostEl.classList.remove('on'); });
 
   return {
-    startSolo,makeOffer,acceptOffer,acceptAnswer,openAnswerModal,closeAnswerModal,pasteAnswerIntoModal,submitAnswerFromModal,sdpCopy,sdpShare,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,
+    startSolo,makeOffer,acceptOffer,acceptAnswer,openAnswerModal,closeAnswerModal,pasteAnswerIntoModal,submitAnswerFromModal,sdpCopy,sdpShare,leaveMesh,resetForNextRound,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,
     castVote,sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
     lobbySetPlace,lobbyBuilderClick,lobbyGunCfg,lobbySaveDesign,lobbyResetDesign,lobbyLoadDesign,
   };
