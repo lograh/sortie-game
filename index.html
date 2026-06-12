@@ -911,7 +911,8 @@ const Game=(()=>{
 
   /* -------- Networking (WebRTC mesh) -------- */
   const Net={
-    peers:{}, // id->{pc,dc,name}
+    peers:{},       // localPeerKey -> {pc,dc}
+    routes:{},      // remotePlayerId -> localPeerKey (learned from incoming `from` field)
     onMsg:(from,m)=>handleNetMsg(from,m),
     broadcast(m){
       const s=JSON.stringify({from:state.me.id,...m});
@@ -931,9 +932,38 @@ const Game=(()=>{
       const s=JSON.stringify({from:state.me.id,...m});
       const pe=this.peers[id]; if(pe&&pe.dc&&pe.dc.readyState==='open') try{pe.dc.send(s);}catch(_){}
     },
+    // Send a pre-formed message verbatim (preserves the original `from` across relays).
+    rawSendToPeerKey(localKey, m){
+      const pe=this.peers[localKey];
+      if(pe && pe.dc && pe.dc.readyState==='open'){
+        try { pe.dc.send(JSON.stringify(m)); return true; } catch(_){}
+      }
+      return false;
+    },
+    // Try to forward toward a target player. Prefers a known direct route; falls back
+    // to broadcasting (dedup happens via sigId on the receiving side).
+    relayToward(targetId, m, exceptKey){
+      const direct = this.routes[targetId];
+      if(direct && this.rawSendToPeerKey(direct, m)) return true;
+      let any = false;
+      for(const k in this.peers){
+        if(k===exceptKey) continue;
+        if(this.rawSendToPeerKey(k, m)) any = true;
+      }
+      return any;
+    },
   };
 
-  function handleNetMsg(from,m){
+  // Track signal sigIds seen so a flooded relay doesn't loop.
+  const _seenSigs = new Set();
+  // Pending auto-handshake pcs, keyed by sigId so the answer can find its pc.
+  const autoPCs = {};
+
+  function handleNetMsg(from,m,viaPeerKey){
+    // Learn the route to this player on every incoming message.
+    if(from && from!==state.me.id && viaPeerKey){
+      Net.routes[from] = viaPeerKey;
+    }
     if(m.kind==='state'){
       const p=state.players[from];
       if(p){
@@ -1020,7 +1050,71 @@ const Game=(()=>{
       } catch(_){}
       if(m.seed) genWorld((m.seed>>>0));
       startPlaying();
+    } else if(m.kind==='peer_list'){
+      // Introducer is telling us about other peers we should auto-connect to.
+      if(Array.isArray(m.ids)){
+        for(const id of m.ids){
+          if(id && id!==state.me.id && !Net.routes[id]) autoOfferTo(id);
+        }
+      }
+    } else if(m.kind==='signal_offer' || m.kind==='signal_answer'){
+      // Dedup so floods don't loop.
+      if(m.sigId){
+        const tag = m.kind+':'+m.sigId;
+        if(_seenSigs.has(tag)) return;
+        _seenSigs.add(tag);
+        // Bounded set to avoid unbounded growth in long sessions.
+        if(_seenSigs.size>500){ const it=_seenSigs.values().next().value; _seenSigs.delete(it); }
+      }
+      if(m.target===state.me.id){
+        if(m.kind==='signal_offer') handleAutoOffer(from, m);
+        else handleAutoAnswer(from, m);
+      } else {
+        // Pass it on toward target; skip the channel we got it from.
+        Net.relayToward(m.target, m, viaPeerKey);
+      }
     }
+  }
+
+  /* -------- Auto-introduction: build a full mesh through relays -------- */
+  async function autoOfferTo(remoteId){
+    if(!remoteId || remoteId===state.me.id || Net.routes[remoteId]) return;
+    const sigId = rid();
+    const pc = new RTCPeerConnection(ICE);
+    const dc = pc.createDataChannel('g');
+    setupDC(pc, dc);
+    autoPCs[sigId] = pc;
+    pc.onicecandidate = async e => {
+      if(!e.candidate){
+        const payload = JSON.stringify(pc.localDescription);
+        Net.relayToward(remoteId, {from: state.me.id, kind:'signal_offer', target:remoteId, sigId, payload});
+      }
+    };
+    try {
+      await pc.setLocalDescription(await pc.createOffer());
+    } catch(_) { delete autoPCs[sigId]; try{ pc.close(); }catch(_){} }
+  }
+  async function handleAutoOffer(senderId, m){
+    // We're the target. Stand up a pc, accept the offer, and send back an answer.
+    const pc = new RTCPeerConnection(ICE);
+    pc.ondatachannel = e => setupDC(pc, e.channel);
+    autoPCs[m.sigId] = pc;
+    let answered = false;
+    pc.onicecandidate = async e => {
+      if(!e.candidate && !answered){
+        answered = true;
+        const payload = JSON.stringify(pc.localDescription);
+        Net.relayToward(senderId, {from: state.me.id, kind:'signal_answer', target:senderId, sigId:m.sigId, payload});
+      }
+    };
+    try {
+      await pc.setRemoteDescription(JSON.parse(m.payload));
+      await pc.setLocalDescription(await pc.createAnswer());
+    } catch(_) { delete autoPCs[m.sigId]; try{ pc.close(); }catch(_){} }
+  }
+  function handleAutoAnswer(senderId, m){
+    const pc = autoPCs[m.sigId]; if(!pc) return;
+    try { pc.setRemoteDescription(JSON.parse(m.payload)); } catch(_){}
   }
 
   /* -------- Voting -------- */
@@ -3920,6 +4014,11 @@ const Game=(()=>{
       if(state.mode!=='lobby') askVote(peerId,'Remote');
       // Announce ourselves to the new peer.
       try{ dc.send(JSON.stringify({from:state.me.id,kind:'lobby_join',name:state.me.name||'P-'+state.me.id.slice(0,3)})); }catch(_){}
+      // Tell them about every OTHER peer we're already connected to so they can auto-introduce.
+      const otherIds = Object.keys(Net.routes).filter(id => id && id!==state.me.id);
+      if(otherIds.length){
+        try{ dc.send(JSON.stringify({from:state.me.id,kind:'peer_list',ids:otherIds})); }catch(_){}
+      }
       // Legacy state message (kept so mid-game joiners still get our ship state).
       dc.send(JSON.stringify({from:state.me.id,kind:'state',name:state.me.name,x:0,y:0,vx:0,vy:0,rot:0,hp:30,maxHp:30,team:0,alive:true}));
       if(state.worldSeed){
@@ -3930,9 +4029,11 @@ const Game=(()=>{
       }
       refreshLobbyMP();
     };
-    dc.onmessage=ev=>{ try{ const m=JSON.parse(ev.data); handleNetMsg(m.from,m); }catch(_){} };
+    dc.onmessage=ev=>{ try{ const m=JSON.parse(ev.data); handleNetMsg(m.from,m,peerId); }catch(_){} };
     dc.onclose=()=>{
       delete Net.peers[peerId];
+      // Drop any routes that pointed through this dead channel.
+      for(const rid in Net.routes){ if(Net.routes[rid]===peerId) delete Net.routes[rid]; }
       // No per-peer-to-from mapping tracked — clear the roster if the last channel closed.
       if(!Object.keys(Net.peers).length) state.lobbyPeers={};
       refreshLobbyMP();
