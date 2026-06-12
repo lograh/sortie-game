@@ -642,6 +642,7 @@ const Game=(()=>{
     mode:'lobby', // lobby|playing
     me:{id:_myId,name:'',team:0,score:0,creds:50,materials:{iron:0,silicon:0,carbon:0,rare:0}},
     peerLastSeen:{},  // playerId → performance.now() of last received message (for ragequit detection)
+    meshViews:{},     // playerId → {direct:[{id,ago}], receivedAt} — others' reports of their direct links
     players:{}, // id->player
     asteroids:[],
     bullets:[],
@@ -1156,6 +1157,12 @@ const Game=(()=>{
         ownerId: from
       };
       startPlaying();
+    } else if(m.kind==='mesh_view'){
+      // Sender is telling us their direct-route list and how recently each link saw traffic.
+      state.meshViews[from] = {
+        direct: Array.isArray(m.direct) ? m.direct : [],
+        receivedAt: performance.now()
+      };
     } else if(m.kind==='pirate_killed'){
       // Killer broadcasts on each fresh pirate kill so we all increment exactly once.
       state.piratesKilled++;
@@ -1206,7 +1213,7 @@ const Game=(()=>{
         let added=false;
         for(const id of m.ids){
           if(id && id!==state.me.id && !Net.directRoutes[id] && !state.pendingPeers[id]){
-            state.pendingPeers[id] = {};
+            state.pendingPeers[id] = {since: performance.now(), lastRetry: performance.now()};
             added = true;
             autoOfferTo(id);
           }
@@ -1332,6 +1339,7 @@ const Game=(()=>{
     // Remove from lobby roster so mesh-status reflects reality.
     delete state.lobbyPeers[id];
     delete state.pendingPeers[id];
+    delete state.meshViews[id];
     if(typeof refreshLobbyMP==='function') refreshLobbyMP();
     // Elect a new owner for any bots the dropped peer was driving.
     if(state.mode==='playing' && isAdopterFor(id)) adoptOrphanedEntities(id);
@@ -1358,12 +1366,19 @@ const Game=(()=>{
   }
 
   let _lastHeartbeatSent = 0;
+  let _lastMeshViewSent = 0;
   function tickPeerHealth(){
     const now = performance.now();
-    // Keep peers' lastSeen fresh in the lobby (no other regular traffic there).
-    if(Object.keys(Net.peers).length>0 && now-_lastHeartbeatSent > 2000){
+    const havePeers = Object.keys(Net.peers).length>0;
+    // Heartbeat keeps peerLastSeen fresh even in the silent lobby.
+    if(havePeers && now-_lastHeartbeatSent > 2000){
       _lastHeartbeatSent = now;
       try { Net.broadcast({kind:'heartbeat'}); } catch(_){}
+    }
+    // mesh_view broadcast — tells others which peers we have direct routes to.
+    if(havePeers && now-_lastMeshViewSent > MESH_VIEW_BROADCAST_MS){
+      _lastMeshViewSent = now;
+      try { Net.broadcast({kind:'mesh_view', direct: buildMeshView()}); } catch(_){}
     }
     for(const id in state.players){
       if(id === state.me.id) continue;
@@ -1380,6 +1395,28 @@ const Game=(()=>{
         maybeGossipAbout(id);
       }
     }
+    // Pending-peer maintenance:
+    //  - if cross-validation shows them alive somewhere, keep retrying autoOfferTo periodically
+    //  - if nobody has seen them for the full timeout, drop them from the pending set
+    let pendingChanged = false;
+    for(const pid in state.pendingPeers){
+      const entry = state.pendingPeers[pid];
+      const since = entry.since || (entry.since = now);
+      if(someoneSeesPeerAlive(pid)){
+        const lastRetry = entry.lastRetry || 0;
+        if(now - lastRetry > PENDING_RETRY_MS){
+          entry.lastRetry = now;
+          autoOfferTo(pid);
+        }
+      } else if(now - since > PENDING_TIMEOUT_MS){
+        delete state.pendingPeers[pid];
+        delete state.meshViews[pid];
+        pendingChanged = true;
+      }
+    }
+    if(pendingChanged && typeof refreshLobbyMP==='function') refreshLobbyMP();
+    // The mesh-status display can change as new mesh_views arrive; refresh periodically.
+    if(state.mode==='lobby' && typeof refreshLobbyMP==='function') refreshLobbyMP();
   }
   setInterval(tickPeerHealth, 1000);
 
@@ -4619,8 +4656,8 @@ const Game=(()=>{
       delete Net.peers[peerId];
       // Drop any routes that pointed through this dead channel.
       for(const rid in Net.routes){ if(Net.routes[rid]===peerId) delete Net.routes[rid]; }
-      for(const rid in Net.directRoutes){ if(Net.directRoutes[rid]===peerId){ delete Net.directRoutes[rid]; delete state.lobbyPeers[rid]; }}
-      if(!Object.keys(Net.peers).length){ state.lobbyPeers={}; state.pendingPeers={}; }
+      for(const rid in Net.directRoutes){ if(Net.directRoutes[rid]===peerId){ delete Net.directRoutes[rid]; delete state.lobbyPeers[rid]; delete state.meshViews[rid]; }}
+      if(!Object.keys(Net.peers).length){ state.lobbyPeers={}; state.pendingPeers={}; state.meshViews={}; }
       refreshLobbyMP();
       if(state.mode==='lobby') addLobbyChatLine('* a peer disconnected','sys');
       else chatLine('* peer disconnected');
@@ -4637,9 +4674,71 @@ const Game=(()=>{
     while(log.children.length>200) log.removeChild(log.firstChild);
     log.scrollTop = log.scrollHeight;
   }
+  // --- Mesh-view aggregation ---
+  // Each peer periodically broadcasts the list of peers they have a *direct* dc to,
+  // along with `ago` seconds since they last heard from that peer. Cross-referencing
+  // these gives us a richer global picture than each peer's local view alone:
+  //  - "Is P alive?" — answered yes if *anyone* sees them directly with low ago.
+  //  - "Does P have a route to Q?" — answered by P's own view, accepting older views
+  //    when cross-validation shows P is still alive elsewhere.
+  const MESH_VIEW_BROADCAST_MS = 3000;
+  const MESH_VIEW_FRESH_MS = 8000;   // a view stays "fresh" for ~2.5 broadcast intervals
+  const MESH_LINK_OK_MS = 4000;       // direct link is healthy if ago < 4s (heartbeat is 2s)
+  const PENDING_TIMEOUT_MS = 30000;
+  const PENDING_RETRY_MS = 10000;
+
+  function buildMeshView(){
+    const now = performance.now();
+    const direct = [];
+    for(const id in Net.directRoutes){
+      const lastSeen = state.peerLastSeen[id];
+      const ago = lastSeen ? Math.round((now - lastSeen)/100)/10 : 99;
+      direct.push({id, ago});
+    }
+    return direct;
+  }
+  // Cross-validation: does any *other* peer's fresh mesh_view report targetId as a
+  // healthy direct link? Treat that as strong evidence targetId is still alive.
+  function someoneSeesPeerAlive(targetId){
+    const now = performance.now();
+    for(const viewerId in state.meshViews){
+      if(viewerId === targetId) continue;
+      const v = state.meshViews[viewerId];
+      if(now - v.receivedAt > MESH_VIEW_FRESH_MS) continue;
+      const e = v.direct && v.direct.find(d => d.id === targetId);
+      if(e && (e.ago||0)*1000 < MESH_LINK_OK_MS) return true;
+    }
+    return false;
+  }
+  // Does `viewerId` currently have a healthy direct route to `targetId`?
+  // For self, use our own direct-routes table. For others, use their mesh_view —
+  // accepting stale views when they're cross-validated as alive elsewhere.
+  function peerHasDirectTo(viewerId, targetId){
+    if(viewerId === state.me.id){
+      if(!Net.directRoutes[targetId]) return false;
+      const ago = performance.now() - (state.peerLastSeen[targetId]||0);
+      return ago < MESH_LINK_OK_MS;
+    }
+    const view = state.meshViews[viewerId];
+    if(!view) return false;
+    const viewFresh = (performance.now() - view.receivedAt) < MESH_VIEW_FRESH_MS;
+    // Stale view: trust it only if we have independent evidence the viewer is alive.
+    if(!viewFresh && !someoneSeesPeerAlive(viewerId)) return false;
+    const e = view.direct && view.direct.find(d => d.id === targetId);
+    return !!(e && (e.ago||0)*1000 < MESH_LINK_OK_MS);
+  }
+
   function isMeshComplete(){
-    // Complete when no peers are pending an auto-handshake.
-    return Object.keys(state.pendingPeers||{}).length===0;
+    if(Object.keys(state.pendingPeers||{}).length > 0) return false;
+    const peers = [state.me.id, ...Object.keys(state.lobbyPeers||{})];
+    if(peers.length < 2) return true;
+    for(const a of peers){
+      for(const b of peers){
+        if(a === b) continue;
+        if(!peerHasDirectTo(a, b)) return false;
+      }
+    }
+    return true;
   }
   function refreshLobbyMP(){
     const el=document.getElementById('lobbyPlayers'); if(!el) return;
