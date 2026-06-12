@@ -1127,26 +1127,25 @@ const Game=(()=>{
       WORLD = m.worldSize || 16000;
       if(m.seed) genWorld((m.seed>>>0));
       state.pendingStart = {
-        bots: m.bots || [],
+        entities: m.entities || [],
         playerHubs: m.playerHubs || {},
         playerSlots: m.playerSlots || {},
         totalRacers: m.totalRacers || 1,
         isHost: false,
-        ownerId: from   // the sender is the original bot owner
+        ownerId: from
       };
       startPlaying();
-    } else if(m.kind==='bot_adopt'){
-      // Another peer adopted the orphaned bots — sync our local _ownerId so we don't double-claim.
-      const ids = Array.isArray(m.botIds) ? m.botIds : [];
-      for(const bid of ids){
-        const b = state.players[bid];
-        if(b && b.ai){
-          b._ownerId = m.newOwner;
-          // If we'd been simulating this bot too (rare race), stop.
-          if(m.newOwner !== state.me.id){
-            const idx = state.aiIds.indexOf(bid);
-            if(idx>=0) state.aiIds.splice(idx,1);
-          }
+    } else if(m.kind==='entity_adopt'){
+      // Another peer adopted the orphaned entities — sync our local _ownerId so we don't double-claim.
+      const ids = Array.isArray(m.ids) ? m.ids : [];
+      for(const eid of ids){
+        const p = state.players[eid]; if(!p) continue;
+        p._ownerId = m.newOwner;
+        if(m.newOwner !== state.me.id){
+          // Strip any of our id-lists in case we'd somehow added them too.
+          let idx = state.aiIds.indexOf(eid); if(idx>=0) state.aiIds.splice(idx,1);
+          idx = state.pirateIds.indexOf(eid); if(idx>=0) state.pirateIds.splice(idx,1);
+          idx = state.traderIds.indexOf(eid); if(idx>=0) state.traderIds.splice(idx,1);
         }
       }
     } else if(m.kind==='peer_check'){
@@ -1251,20 +1250,23 @@ const Game=(()=>{
     const alive = aliveHumanIds().filter(id => id !== droppedId).sort();
     return alive[0] === state.me.id;
   }
-  // Take over every bot the dropped peer was driving.
-  function adoptOrphanedBots(droppedId){
+  // Take over every entity (bot/pirate/trader) the dropped peer was driving.
+  // Dormant entities just change ownership; active ones also go onto our local id-list.
+  function adoptOrphanedEntities(droppedId){
     const adopted = [];
-    for(const bid in state.players){
-      const b = state.players[bid];
-      if(b && b.ai && b._ownerId === droppedId){
-        b._ownerId = state.me.id;
-        if(!state.aiIds.includes(bid)) state.aiIds.push(bid);
-        adopted.push(bid);
-      }
+    for(const id in state.players){
+      const p = state.players[id];
+      if(!p || p._ownerId !== droppedId) continue;
+      p._ownerId = state.me.id;
+      adopted.push(id);
+      if(p._dormant) continue;
+      if(p.pirate && !state.pirateIds.includes(id)) state.pirateIds.push(id);
+      else if(p.trader && !state.traderIds.includes(id)) state.traderIds.push(id);
+      else if(p.ai && !state.aiIds.includes(id)) state.aiIds.push(id);
     }
     if(adopted.length){
-      chatLine('* adopted '+adopted.length+' bot'+(adopted.length>1?'s':'')+' from dropped peer');
-      try { Net.broadcast({kind:'bot_adopt', formerOwner: droppedId, newOwner: state.me.id, botIds: adopted}); } catch(_){}
+      chatLine('* adopted '+adopted.length+' entit'+(adopted.length>1?'ies':'y')+' from dropped peer');
+      try { Net.broadcast({kind:'entity_adopt', formerOwner: droppedId, newOwner: state.me.id, ids: adopted}); } catch(_){}
     }
   }
 
@@ -1286,7 +1288,7 @@ const Game=(()=>{
     delete state.pendingPeers[id];
     if(typeof refreshLobbyMP==='function') refreshLobbyMP();
     // Elect a new owner for any bots the dropped peer was driving.
-    if(state.mode==='playing' && isAdopterFor(id)) adoptOrphanedBots(id);
+    if(state.mode==='playing' && isAdopterFor(id)) adoptOrphanedEntities(id);
   }
 
   function maybeGossipAbout(id){
@@ -1516,7 +1518,7 @@ const Game=(()=>{
     if(state.gameMode==='race'){
       state.raceCheckpoints = state.raceCheckpoints.slice(0, state._raceDesired);
     }
-    const cfg = state.pendingStart || { bots:[], playerHubs:{}, playerSlots:{}, totalRacers:1, isHost:true };
+    const cfg = state.pendingStart || { entities:[], playerHubs:{}, playerSlots:{}, totalRacers:1, isHost:true };
     const myTeam=Math.max(0,Math.min(5,parseInt(document.getElementById('myteam').value)||0));
     const p=spawnPlayer(state.me.id,state.me.name,myTeam);
     if(state.gameMode==='race' && state.raceCheckpoints.length>=2){
@@ -1535,7 +1537,7 @@ const Game=(()=>{
     p.grace=180;
     state.players[state.me.id]=p;
     Net.broadcast({kind:'team',team:myTeam});
-    spawnBotsFromList(cfg.bots, cfg.totalRacers);
+    spawnEntitiesFromList(cfg.entities, cfg.totalRacers);
     state.roundEndTick=mins>0?(mins*60*60):0;
     state.killGoal=goal;
     state.roundEnded=false;
@@ -1963,26 +1965,76 @@ const Game=(()=>{
       rot: Math.atan2(-ry, -rx),                  // face back toward c1
     };
   }
-  // Spawn bots from an authoritative spec list (built once by the start presser, broadcast in start_game).
-  // Each bot has an `ownerId` in its spec; whichever peer's id matches adds it to aiIds and
-  // simulates it. On owner drop, a deterministic election reassigns the bot.
-  function spawnBotsFromList(bots, totalRacers){
-    for(const b of (bots||[])){
-      const bot = spawnPlayer(b.id, b.name, b.team||0);
-      bot.ai=true; bot.aiCd=0;
-      bot._ownerId = b.ownerId || state.me.id;
-      if(state.gameMode==='race' && state.raceCheckpoints.length>=2){
-        const pose = raceStartPose(b.raceSlot ?? 1, totalRacers || 1);
-        bot.x=pose.x; bot.y=pose.y; bot.rot=pose.rot;
-        bot.checkpoint=0; bot.lap=0;
-      } else {
-        bot.x = b.x || 0;
-        bot.y = b.y || 0;
+  // Unified entity spawner. Builds the right shape per type ('bot' | 'pirate' | 'trader'),
+  // stamps `_ownerId` / `_wakeTick`, and (if I'm the owner of an already-awake entity)
+  // pushes onto the appropriate id-list so my local sim drives it. Dormant entities
+  // wait in `state.players` until `tickEntityWakes` activates them.
+  function spawnEntitiesFromList(entities, totalRacers){
+    for(const e of (entities||[])){
+      const type = e.type || 'bot';
+      const owner = e.ownerId || state.me.id;
+      const dormant = (e.wakeTick||0) > 0;
+      let ent = null, idList = null;
+      if(type === 'bot'){
+        ent = spawnPlayer(e.id, e.name, e.team||0);
+        ent.ai = true; ent.aiCd = 0;
+        if(state.gameMode==='race' && state.raceCheckpoints.length>=2){
+          const pose = raceStartPose(e.raceSlot ?? 1, totalRacers || 1);
+          ent.x=pose.x; ent.y=pose.y; ent.rot=pose.rot;
+          ent.checkpoint=0; ent.lap=0;
+        } else {
+          ent.x = e.x || 0; ent.y = e.y || 0;
+        }
+        ent.spawnX = ent.x; ent.spawnY = ent.y;
+        ent.grace = 180;
+        idList = state.aiIds;
+      } else if(type === 'pirate'){
+        ent = {
+          id: e.id, name: e.name || 'Pirate', team: e.team || 9, pirate: true,
+          x: e.x || 0, y: e.y || 0, vx: 0, vy: 0, rot: e.rot || 0,
+          layout: makeNpcLayout('pirate'), hp: 0, maxHp: 0, fireCd: 0,
+          kills:0, deaths:0, creds:0, materials:{iron:0,silicon:0,carbon:0,rare:0},
+          alive: true, respawn: 0, grace: 0, docked: false, thrusting: false,
+          wanderTarget: null, wanderCd: 0
+        };
+        const s = shipStats(ent); ent.maxHp = s.maxHp; ent.hp = ent.maxHp; ent._mass = s.mass;
+        idList = state.pirateIds;
+      } else if(type === 'trader'){
+        ent = {
+          id: e.id, name: e.name || 'Trader', team: e.team || 8, trader: true,
+          x: e.x || 0, y: e.y || 0, vx: 0, vy: 0, rot: e.rot || 0,
+          layout: makeNpcLayout('trader'), hp: 0, maxHp: 0, fireCd: 0,
+          kills:0, deaths:0, creds:0, materials:{iron:0,silicon:0,carbon:0,rare:0},
+          alive: true, respawn: 0, grace: 0, docked: false, thrusting: false,
+          targetHub: state.platforms[e.targetHubIdx] || state.platforms[0],
+          stock: e.stock || {}
+        };
+        const s = shipStats(ent); ent.maxHp = s.maxHp; ent.hp = ent.maxHp; ent._mass = s.mass;
+        idList = state.traderIds;
       }
-      bot.spawnX=bot.x; bot.spawnY=bot.y;
-      bot.grace=180;
-      state.players[b.id]=bot;
-      if(bot._ownerId === state.me.id) state.aiIds.push(b.id);
+      if(!ent) continue;
+      ent._ownerId = owner;
+      ent._wakeTick = e.wakeTick || 0;
+      ent._dormant = dormant;
+      state.players[e.id] = ent;
+      if(!dormant && owner === state.me.id && idList) idList.push(e.id);
+    }
+  }
+  // Each tick, activate any dormant entity whose wakeTick has arrived. The owner adds it
+  // to their id-list and starts simulating; every peer announces it locally so the
+  // "pirate appeared" cue fires roughly together.
+  function tickEntityWakes(){
+    for(const id in state.players){
+      const p = state.players[id];
+      if(!p || !p._dormant) continue;
+      if(state.tick < (p._wakeTick||0)) continue;
+      p._dormant = false;
+      if(p.pirate) chatLine('⚠ pirate appeared');
+      if(p._ownerId === state.me.id){
+        if(p.pirate && !state.pirateIds.includes(id)) state.pirateIds.push(id);
+        else if(p.trader && !state.traderIds.includes(id)) state.traderIds.push(id);
+        else if(p.ai && !state.aiIds.includes(id)) state.aiIds.push(id);
+      }
     }
   }
 
@@ -2277,14 +2329,8 @@ const Game=(()=>{
       const sp=Math.hypot(bot.vx,bot.vy); if(sp>maxSp){ bot.vx*=maxSp/sp; bot.vy*=maxSp/sp; }
     }
 
-    // NPC spawn timer (only if at least one platform exists)
-    if(state.platforms.length){
-      state.npcSpawnCd--;
-      if(state.npcSpawnCd<=0){
-        state.npcSpawnCd=2400 + Math.floor(Math.random()*1200); // 40-60s
-        if(Math.random()<0.6) spawnPirate(); else spawnTrader();
-      }
-    }
+    // Wake any dormant entities whose scheduled tick has arrived.
+    tickEntityWakes();
     // pirate AI — roam, attack any visible player
     for(const pid of state.pirateIds){
       const pr=state.players[pid]; if(!pr || !pr.alive) continue;
@@ -4012,27 +4058,62 @@ const Game=(()=>{
     } else if(state.platforms.length){
       for(const pid of playerIds) playerHubs[pid] = pickHubFor(pid, claimed);
     }
-    // Authoritative bot specs — same ids/teams/positions ship to every peer.
-    // Round-robin owner assignment spreads AI simulation load across all humans.
-    const bots = [];
+    // Unified entity spec list — bots, then staggered pirates/traders.
+    // Round-robin owner assignment spreads simulation load across all humans, and
+    // adoption-on-drop handles the rest. Each entity carries a `wakeTick` so NPCs
+    // trickle in over time instead of all appearing at game-start.
+    const entities = [];
+    // 1) AI bots — active immediately (wakeTick: 0)
     for(let i=0;i<aicount;i++){
       const id = 'ai_'+rid();
       const team = teamCount>0 ? (i%teamCount)+1 : 0;
       const ownerId = playerIds[i % playerIds.length];
-      const b = {id, name:'Bot-'+(i+1), team, ownerId};
+      const e = {id, name:'Bot-'+(i+1), team, ownerId, type:'bot', wakeTick:0};
       if(isRace){
-        b.raceSlot = playerIds.length + i;
+        e.raceSlot = playerIds.length + i;
       } else if(state.platforms.length){
         const hubIdx = pickHubFor(id, claimed);
         const hub = state.platforms[hubIdx];
         const a = Math.random()*Math.PI*2, r = hub.r+PLATFORM_DEFENSE+200+Math.random()*400;
-        b.x = hub.x+Math.cos(a)*r;
-        b.y = hub.y+Math.sin(a)*r;
+        e.x = hub.x+Math.cos(a)*r;
+        e.y = hub.y+Math.sin(a)*r;
       }
-      bots.push(b);
+      entities.push(e);
+    }
+    // 2) Pirates — 4 of them, staggered every ~45-60s from t=60s
+    let nextPirateTick = 60*60;
+    let ownerCycle = aicount;
+    for(let i=0;i<4;i++){
+      const id = 'pirate_'+rid();
+      const ang = Math.random()*Math.PI*2;
+      const r = 2000 + Math.random()*WORLD*0.5;
+      entities.push({
+        id, name:'Pirate', team:9, ownerId: playerIds[(ownerCycle++) % playerIds.length],
+        type:'pirate', wakeTick: nextPirateTick,
+        x: Math.cos(ang)*r, y: Math.sin(ang)*r, rot: Math.random()*Math.PI*2,
+      });
+      nextPirateTick += (45 + Math.floor(Math.random()*15)) * 60;
+    }
+    // 3) Traders — 2 of them (if there's somewhere to trade between), spaced ~3 min apart
+    if(state.platforms.length>=2){
+      let nextTraderTick = 90*60;
+      for(let i=0;i<2;i++){
+        const startIdx = Math.floor(Math.random()*state.platforms.length);
+        let targetIdx; do { targetIdx = Math.floor(Math.random()*state.platforms.length); } while(targetIdx===startIdx);
+        const start = state.platforms[startIdx];
+        const id = 'trader_'+rid();
+        entities.push({
+          id, name:'Trader', team:8, ownerId: playerIds[(ownerCycle++) % playerIds.length],
+          type:'trader', wakeTick: nextTraderTick,
+          x: start.x, y: start.y, rot: 0,
+          targetHubIdx: targetIdx,
+          stock: randomTraderStock(),
+        });
+        nextTraderTick += (120 + Math.floor(Math.random()*60)) * 60;
+      }
     }
     const totalRacers = playerIds.length + aicount;
-    state.pendingStart = { bots, playerHubs, playerSlots, totalRacers, isHost:true, ownerId: state.me.id };
+    state.pendingStart = { entities, playerHubs, playerSlots, totalRacers, isHost:true, ownerId: state.me.id };
     if(havePeers){
       try {
         Net.broadcast({kind:'start_game',
@@ -4040,7 +4121,7 @@ const Game=(()=>{
           gameMode,
           mins: parseInt(document.getElementById('roundmin').value)||0,
           goal: parseInt(document.getElementById('killgoal').value)||0,
-          bots, playerHubs, playerSlots, totalRacers,
+          entities, playerHubs, playerSlots, totalRacers,
           worldSize: WORLD,
           raceCombat: !!(document.getElementById('raceCombat')?.checked),
           raceCheckpointsN: parseInt(document.getElementById('raceCheckpoints')?.value)||6,
