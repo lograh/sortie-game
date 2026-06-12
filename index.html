@@ -312,6 +312,7 @@
             <select id="gamemode" style="background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px;font-family:inherit;font-size:13px">
               <option value="deathmatch">Deathmatch (kills + timer)</option>
               <option value="race">Race (checkpoints)</option>
+              <option value="infection">Infection (tag — last clean wins)</option>
             </select></div>
           <div class="row" id="raceOptsRow" style="display:none">Race opts
             <label class="dim">checkpoints <input id="raceCheckpoints" type="number" min="3" max="12" value="6" style="width:48px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px"></label>
@@ -1894,6 +1895,13 @@ const Game=(()=>{
     state.roundEnded=false;
     state.raceFirstFinishTick=0;
     state.raceFinishOrder=[];
+    // Infection mode: schedule the patient-zero pick once everyone's spawned in.
+    // We can't pick at this exact moment because peer entries are populated by their state
+    // broadcasts (which arrive after the dc opens). Wait ~3s then deterministically pick.
+    if(state.gameMode==='infection'){
+      state.infectionPatientZeroAt = state.tick + 60*3;
+      state.infectionEnded = false;
+    }
     if(state.gameMode==='race'){
       const peerCount=Object.keys(Net.peers).length;
       if(peerCount>0){
@@ -2467,6 +2475,33 @@ const Game=(()=>{
     // below 20 = dust, not tracked (already not respawned)
   }
 
+  /* -------- Infection mode -------- */
+  const INFECTED_TEAM = 6;
+
+  function infectPlayer(p, shooter){
+    if(!p || p.infected) return;
+    p.infected = true;
+    p._originalTeam = p._originalTeam ?? p.team;
+    p.team = INFECTED_TEAM;
+    const who = p.name || p.id.slice(0,4);
+    const by = shooter?.name || shooter?.id?.slice(0,4) || 'patient zero';
+    killFeed('🦠 '+who+' infected by '+by);
+    if(p.id === state.me.id) chatLine('🦠 You are infected!');
+  }
+
+  // Count surviving uninfected humans. Used for end-of-round check.
+  function countUninfectedHumans(){
+    let n = 0;
+    for(const id in state.players){
+      const p = state.players[id];
+      if(!p || p.pirate || p.trader || p.ai) continue;
+      if(p.infected) continue;
+      if(!p.alive) continue;
+      n++;
+    }
+    return n;
+  }
+
   // Apply damage: shield soaks first, hp soaks rest. Reset shield regen cooldown.
   function takeDamage(p, dmg){
     p.shieldCd = 180; // 3 sec out-of-combat before regen resumes
@@ -2965,6 +3000,10 @@ const Game=(()=>{
           b._dead=true;
           p.hitFlash=8;
           if(p.id===state.me.id){ Sound.hit(); spawnHitArc(p,b); }
+          // Infection mode: any hit from an infected shooter spreads the infection.
+          if(state.gameMode==='infection' && shooter?.infected && !p.infected){
+            infectPlayer(p, shooter);
+          }
           if(p.hp<=0){
             if(p.pirate){
               // Only one peer should spawn the loot. Killer-spawns so they can pick it up
@@ -3248,7 +3287,8 @@ const Game=(()=>{
           1.0, 0.5+0.25*Math.random(), 0.10+0.1*Math.random(), 1);
       }
       let c, shipScale=18;
-      if(p.king){ c=[0.95,0.2,0.7]; shipScale=32; }       // pirate king: magenta, big
+      if(p.infected){ c=[0.55,0.95,0.20]; shipScale=p.king?32:18; }  // infected: sickly bright green
+      else if(p.king){ c=[0.95,0.2,0.7]; shipScale=32; }       // pirate king: magenta, big
       else if(p.pirate) c=[0.85,0.2,0.1];                  // pirates: ominous red-orange
       else if(p.trader) c=[0.4,0.85,0.8];                  // traders: pale teal
       else c=teamColor(p.team,id===state.me.id);
@@ -4534,6 +4574,34 @@ const Game=(()=>{
     // kill-goal end check
     if(state.killGoal>0 && !state.roundEnded && killLeader()>=state.killGoal){
       endRound();
+    }
+    // Infection mode bookkeeping
+    if(state.gameMode==='infection' && !state.roundEnded){
+      // Patient zero — picked deterministically a few seconds after spawn-in so all peers
+      // have everyone in state.players. Each peer runs the same selector and agrees.
+      if(state.infectionPatientZeroAt && state.tick >= state.infectionPatientZeroAt && !state.infectionPatientZeroPicked){
+        const candidates = Object.values(state.players)
+          .filter(p => !p.pirate && !p.trader && !p.ai && p.alive)
+          .map(p => p.id).sort();
+        if(candidates.length){
+          const seed = state.worldSeed || 1;
+          const idx = (seed >>> 0) % candidates.length;
+          const zero = state.players[candidates[idx]];
+          if(zero){
+            infectPlayer(zero, null);
+            killFeed('🦠 PATIENT ZERO: '+(zero.name||zero.id.slice(0,4)));
+          }
+        }
+        state.infectionPatientZeroPicked = true;
+      }
+      // Round-end: last clean human wins (or all infected → draw).
+      if(state.infectionPatientZeroPicked){
+        const clean = countUninfectedHumans();
+        if(clean <= 1){
+          state.infectionEnded = true;
+          endRound();
+        }
+      }
     }
     requestAnimationFrame(loop);
   }
