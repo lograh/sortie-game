@@ -1131,9 +1131,24 @@ const Game=(()=>{
         playerHubs: m.playerHubs || {},
         playerSlots: m.playerSlots || {},
         totalRacers: m.totalRacers || 1,
-        isHost: false
+        isHost: false,
+        ownerId: from   // the sender is the original bot owner
       };
       startPlaying();
+    } else if(m.kind==='bot_adopt'){
+      // Another peer adopted the orphaned bots — sync our local _ownerId so we don't double-claim.
+      const ids = Array.isArray(m.botIds) ? m.botIds : [];
+      for(const bid of ids){
+        const b = state.players[bid];
+        if(b && b.ai){
+          b._ownerId = m.newOwner;
+          // If we'd been simulating this bot too (rare race), stop.
+          if(m.newOwner !== state.me.id){
+            const idx = state.aiIds.indexOf(bid);
+            if(idx>=0) state.aiIds.splice(idx,1);
+          }
+        }
+      }
     } else if(m.kind==='peer_check'){
       // Someone is asking how recently we've heard from m.target.
       const last = state.peerLastSeen[m.target];
@@ -1220,6 +1235,39 @@ const Game=(()=>{
   const PEER_DROP_MS  = 30000;    // sustained silence — declare DNF
   const PEER_GOSSIP_INTERVAL_MS = 5000;
 
+  // Surviving humans, including self — used for deterministic adopter election.
+  function aliveHumanIds(){
+    const set = new Set([state.me.id]);
+    for(const id in state.players){
+      const p = state.players[id];
+      if(!p || p.ai || p.pirate || p.trader) continue;
+      if(p._status==='dropped') continue;
+      set.add(id);
+    }
+    return [...set];
+  }
+  // Lowest-id rule: every surviving peer computes the same answer without coordination.
+  function isAdopterFor(droppedId){
+    const alive = aliveHumanIds().filter(id => id !== droppedId).sort();
+    return alive[0] === state.me.id;
+  }
+  // Take over every bot the dropped peer was driving.
+  function adoptOrphanedBots(droppedId){
+    const adopted = [];
+    for(const bid in state.players){
+      const b = state.players[bid];
+      if(b && b.ai && b._ownerId === droppedId){
+        b._ownerId = state.me.id;
+        if(!state.aiIds.includes(bid)) state.aiIds.push(bid);
+        adopted.push(bid);
+      }
+    }
+    if(adopted.length){
+      chatLine('* adopted '+adopted.length+' bot'+(adopted.length>1?'s':'')+' from dropped peer');
+      try { Net.broadcast({kind:'bot_adopt', formerOwner: droppedId, newOwner: state.me.id, botIds: adopted}); } catch(_){}
+    }
+  }
+
   function markPeerDropped(id){
     const p = state.players[id]; if(!p) return;
     if(p._status==='dropped') return;
@@ -1237,6 +1285,8 @@ const Game=(()=>{
     delete state.lobbyPeers[id];
     delete state.pendingPeers[id];
     if(typeof refreshLobbyMP==='function') refreshLobbyMP();
+    // Elect a new owner for any bots the dropped peer was driving.
+    if(state.mode==='playing' && isAdopterFor(id)) adoptOrphanedBots(id);
   }
 
   function maybeGossipAbout(id){
@@ -1485,7 +1535,7 @@ const Game=(()=>{
     p.grace=180;
     state.players[state.me.id]=p;
     Net.broadcast({kind:'team',team:myTeam});
-    spawnBotsFromList(cfg.bots, cfg.isHost, cfg.totalRacers);
+    spawnBotsFromList(cfg.bots, cfg.isHost, cfg.totalRacers, cfg.ownerId || state.me.id);
     state.roundEndTick=mins>0?(mins*60*60):0;
     state.killGoal=goal;
     state.roundEnded=false;
@@ -1914,12 +1964,13 @@ const Game=(()=>{
     };
   }
   // Spawn bots from an authoritative spec list (built once by the host, broadcast in start_game).
-  // Peers spawn the same entities into state.players, but only the host pushes onto state.aiIds
-  // so only the host actually simulates them.
-  function spawnBotsFromList(bots, isHost, totalRacers){
+  // Each bot remembers its `_ownerId` — the player currently driving it. If that owner drops,
+  // a deterministic election (lowest-id surviving human) reassigns ownership.
+  function spawnBotsFromList(bots, isHost, totalRacers, ownerId){
     for(const b of (bots||[])){
       const bot = spawnPlayer(b.id, b.name, b.team||0);
       bot.ai=true; bot.aiCd=0;
+      bot._ownerId = ownerId || state.me.id;
       if(state.gameMode==='race' && state.raceCheckpoints.length>=2){
         const pose = raceStartPose(b.raceSlot ?? 1, totalRacers || 1);
         bot.x=pose.x; bot.y=pose.y; bot.rot=pose.rot;
@@ -3979,7 +4030,7 @@ const Game=(()=>{
       bots.push(b);
     }
     const totalRacers = playerIds.length + aicount;
-    state.pendingStart = { bots, playerHubs, playerSlots, totalRacers, isHost:true };
+    state.pendingStart = { bots, playerHubs, playerSlots, totalRacers, isHost:true, ownerId: state.me.id };
     if(havePeers){
       try {
         Net.broadcast({kind:'start_game',
