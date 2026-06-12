@@ -5391,12 +5391,14 @@ const Game=(()=>{
       // was deployed. Anything authored after that hasn't shipped yet.
       let buildTime = NaN;
       try { buildTime = new Date(document.lastModified).getTime(); } catch(_){}
-      const filtered = commits.filter(c => {
+      const deployed = commits.filter(c => {
         if(!Number.isFinite(buildTime)) return true;   // can't parse → show everything
         const t = c.commit?.author?.date ? new Date(c.commit.author.date).getTime() : 0;
         return t <= buildTime;
-      }).slice(0, 8);
-      const skipped = commits.length - filtered.length;
+      });
+      // Only count commits NEWER than the build — older ones lost to the slice limit don't matter.
+      const skipped = commits.length - deployed.length;
+      const filtered = deployed.slice(0, 8);
       const list = filtered.map(c => {
         const msg = (c.commit?.message||'').split('\n')[0];
         const sha = (c.sha||'').slice(0,7);
