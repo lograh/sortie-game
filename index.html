@@ -611,9 +611,16 @@ function makeRng(seed){
   };
 }
 const Game=(()=>{
+  // Persistent per-tab id so a refresh keeps your slot in an existing mesh.
+  // sessionStorage is tab-scoped, so two tabs in the same browser still get different ids.
+  let _myId = null;
+  try { _myId = sessionStorage.getItem('sortie_id') || null; } catch(_){}
+  if(!_myId){ _myId = rid(); try { sessionStorage.setItem('sortie_id', _myId); } catch(_){} }
+
   const state={
     mode:'lobby', // lobby|playing
-    me:{id:rid(),name:'',team:0,score:0,creds:50,materials:{iron:0,silicon:0,carbon:0,rare:0}},
+    me:{id:_myId,name:'',team:0,score:0,creds:50,materials:{iron:0,silicon:0,carbon:0,rare:0}},
+    peerLastSeen:{},  // playerId → performance.now() of last received message (for ragequit detection)
     players:{}, // id->player
     asteroids:[],
     bullets:[],
@@ -1018,6 +1025,18 @@ const Game=(()=>{
     if(from && from!==state.me.id && viaPeerKey){
       Net.routes[from] = viaPeerKey;
     }
+    // Heartbeat: any message from a remote player counts as "seen" — clears laggy/dropped.
+    if(from && from!==state.me.id){
+      state.peerLastSeen[from] = performance.now();
+      const p = state.players[from];
+      if(p && (p._status==='laggy' || p._status==='dropped')){
+        const wasDropped = p._status==='dropped';
+        p._status = 'ok';
+        if(wasDropped){
+          (state.mode==='playing' ? chatLine : (s=>addLobbyChatLine(s,'sys')))('* '+(p.name||from.slice(0,4))+' reconnected');
+        }
+      }
+    }
     if(m.kind==='state'){
       const p=state.players[from];
       if(p){
@@ -1115,6 +1134,14 @@ const Game=(()=>{
         isHost: false
       };
       startPlaying();
+    } else if(m.kind==='peer_check'){
+      // Someone is asking how recently we've heard from m.target.
+      const last = state.peerLastSeen[m.target];
+      const ago = last ? (performance.now()-last) : null;
+      Net.broadcast({kind:'peer_check_reply', target:m.target, ago});
+    } else if(m.kind==='peer_check_reply'){
+      const p = state.players[m.target];
+      if(p && p._gossipReplies) p._gossipReplies[from] = m.ago;
     } else if(m.kind==='peer_list'){
       // Introducer is telling us about other peers we should auto-connect to.
       if(Array.isArray(m.ids)){
@@ -1187,6 +1214,76 @@ const Game=(()=>{
     const pc = autoPCs[m.sigId]; if(!pc) return;
     try { pc.setRemoteDescription(JSON.parse(m.payload)); } catch(_){}
   }
+
+  /* -------- Peer health: laggy → gossip → recover or DNF -------- */
+  const PEER_LAGGY_MS = 2500;     // brief silence — show laggy marker, start gossip
+  const PEER_DROP_MS  = 30000;    // sustained silence — declare DNF
+  const PEER_GOSSIP_INTERVAL_MS = 5000;
+
+  function markPeerDropped(id){
+    const p = state.players[id]; if(!p) return;
+    if(p._status==='dropped') return;
+    p._status='dropped';
+    const name = p.name||id.slice(0,4);
+    (state.mode==='playing' ? chatLine : (s=>addLobbyChatLine(s,'sys')))('* '+name+' dropped (no signal for 30s)');
+    // Close our direct dc to this peer if we still have one; the connection is dead.
+    const key = Net.directRoutes[id];
+    if(key){
+      try { Net.peers[key]?.pc?.close(); } catch(_){}
+      delete Net.directRoutes[id];
+      delete Net.routes[id];
+    }
+    // Remove from lobby roster so mesh-status reflects reality.
+    delete state.lobbyPeers[id];
+    delete state.pendingPeers[id];
+    if(typeof refreshLobbyMP==='function') refreshLobbyMP();
+  }
+
+  function maybeGossipAbout(id){
+    const p = state.players[id]; if(!p) return;
+    const now = performance.now();
+    if(p._lastGossipAt && now - p._lastGossipAt < PEER_GOSSIP_INTERVAL_MS) return;
+    p._lastGossipAt = now;
+    p._gossipReplies = {};
+    try { Net.broadcast({kind:'peer_check', target:id}); } catch(_){}
+    setTimeout(()=>{
+      const replies = p._gossipReplies || {};
+      const otherCanSee = Object.values(replies).some(ago => ago!==null && ago < PEER_LAGGY_MS);
+      // If at least one peer can still reach the target and we can't, try to re-mesh.
+      const ourAgo = performance.now() - (state.peerLastSeen[id]||0);
+      if(otherCanSee && ourAgo > PEER_LAGGY_MS){
+        // Re-open a direct route via the mesh (signal_offer floods, working peer relays).
+        delete Net.directRoutes[id]; // force autoOfferTo to actually try
+        autoOfferTo(id);
+      }
+    }, 2000);
+  }
+
+  let _lastHeartbeatSent = 0;
+  function tickPeerHealth(){
+    const now = performance.now();
+    // Keep peers' lastSeen fresh in the lobby (no other regular traffic there).
+    if(Object.keys(Net.peers).length>0 && now-_lastHeartbeatSent > 2000){
+      _lastHeartbeatSent = now;
+      try { Net.broadcast({kind:'heartbeat'}); } catch(_){}
+    }
+    for(const id in state.players){
+      if(id === state.me.id) continue;
+      const p = state.players[id];
+      if(!p || p.pirate || p.trader || p.ai) continue; // skip NPCs and host-simulated bots
+      const lastSeen = state.peerLastSeen[id];
+      // If we've never seen them (e.g., locally spawned but no msg yet), don't penalize.
+      if(!lastSeen){ continue; }
+      const ago = now - lastSeen;
+      if(ago > PEER_DROP_MS){
+        markPeerDropped(id);
+      } else if(ago > PEER_LAGGY_MS){
+        if(p._status !== 'laggy' && p._status !== 'dropped') p._status = 'laggy';
+        maybeGossipAbout(id);
+      }
+    }
+  }
+  setInterval(tickPeerHealth, 1000);
 
   /* -------- Voting -------- */
   function askVote(candidateId,candidateName){
@@ -2647,9 +2744,13 @@ const Game=(()=>{
         const finished = state.raceFinishOrder.includes(p.id);
         const tag = finished?(' 🏁 #'+(state.raceFinishOrder.indexOf(p.id)+1)):'';
         const ping = state.pingTo[p.id];
-        const pingStr = (p.id===state.me.id || ping===undefined) ? '' :
+        const pingStr = (p.id===state.me.id || ping===undefined || p._status==='dropped') ? '' :
           ` <span style="color:${ping<100?'#7f7':ping<300?'#fd6':'#f88'};font-size:10px">${ping}ms</span>`;
-        s+=`<div class="${cls}">${esc(p.name||p.id.slice(0,6))}${pingStr}: L${(p.lap||0)+1}/${state.raceLaps} cp${(p.checkpoint||0)+1}/${state.raceCheckpoints.length}${tag}</div>`;
+        const statusStr = p._status==='dropped' ? ' <span style="color:#888;font-weight:bold">DNF</span>'
+                        : p._status==='laggy' ? ' <span style="color:#fc6;font-size:10px">⚠ laggy</span>' : '';
+        const stats = p._status==='dropped' ? ''
+                    : ': L'+((p.lap||0)+1)+'/'+state.raceLaps+' cp'+((p.checkpoint||0)+1)+'/'+state.raceCheckpoints.length+tag;
+        s+=`<div class="${cls}">${esc(p.name||p.id.slice(0,6))}${pingStr}${statusStr}${stats}</div>`;
       });
     } else {
       const groups={};
@@ -2658,21 +2759,33 @@ const Game=(()=>{
         if(p.pirate || p.trader) continue;
         const key=p.team===0?('p_'+id):('t_'+p.team);
         const label=p.team===0?p.name:('Team '+p.team);
-        if(!groups[key]) groups[key]={label,kills:0,hasMe:false,pingId:p.team===0?id:null,worstPing:0};
+        if(!groups[key]) groups[key]={label,kills:0,hasMe:false,pingId:p.team===0?id:null,worstPing:0,members:0,droppedMembers:0,laggyMembers:0};
         groups[key].kills+=p.kills||0;
+        groups[key].members++;
+        if(p._status==='dropped') groups[key].droppedMembers++;
+        if(p._status==='laggy') groups[key].laggyMembers++;
         if(id===state.me.id) groups[key].hasMe=true;
         if(id!==state.me.id && state.pingTo[id]!==undefined){
           if(state.pingTo[id]>groups[key].worstPing) groups[key].worstPing=state.pingTo[id];
         }
+      }
+      for(const k in groups){
+        const g = groups[k];
+        if(g.droppedMembers === g.members) g.status = 'dropped';
+        else if(g.laggyMembers > 0 || g.droppedMembers > 0) g.status = 'laggy';
+        else g.status = 'ok';
       }
       const arr=Object.values(groups).sort((a,b)=>b.kills-a.kills);
       s='<div class="title">Scores'+(state.killGoal?' (goal '+state.killGoal+')':'')+'</div>';
       arr.forEach((g,i)=>{
         const cls=(i===0&&arr.length>1)?'lead':(g.hasMe?'you':'');
         const ping = g.pingId ? state.pingTo[g.pingId] : (g.worstPing||undefined);
-        const pingStr = (g.hasMe || ping===undefined) ? '' :
+        const pingStr = (g.hasMe || ping===undefined || g.status==='dropped') ? '' :
           ` <span style="color:${ping<100?'#7f7':ping<300?'#fd6':'#f88'};font-size:10px">${ping}ms</span>`;
-        s+=`<div class="${cls}">${esc(g.label)}${pingStr}: ${g.kills}${i===0&&arr.length>1?' ★':''}</div>`;
+        const statusStr = g.status==='dropped' ? ' <span style="color:#888;font-weight:bold">DNF</span>'
+                        : g.status==='laggy' ? ' <span style="color:#fc6;font-size:10px">⚠</span>' : '';
+        const score = g.status==='dropped' ? '' : ': '+g.kills+(i===0&&arr.length>1?' ★':'');
+        s+=`<div class="${cls}">${esc(g.label)}${pingStr}${statusStr}${score}</div>`;
       });
     }
     pp.innerHTML=s;
