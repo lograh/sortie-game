@@ -174,42 +174,6 @@
     <h3>Recent changes <button onclick="Game.toggleChangelog()" style="float:right;font-size:11px;padding:3px 8px;min-height:0">Close</button></h3>
     <div class="body" id="changelogBody" style="font-size:12px;line-height:1.55">Loading…</div>
   </div>
-  <div id="settingsModal" class="panel" style="display:none;left:50%;top:50%;transform:translate(-50%,-50%);width:min(520px,92vw);max-height:88vh;z-index:11">
-    <h3>Settings <button onclick="Game.closeSettings()" style="float:right;font-size:11px;padding:3px 8px;min-height:0">Close</button></h3>
-    <div class="body" style="font-size:12px">
-      <h4 style="color:#fd6;margin:0 0 6px 0;border-bottom:1px solid #234;padding-bottom:4px">Video</h4>
-      <div class="row">Color-blind mode
-        <select id="setCb" style="background:#012;color:#cfe;border:1px solid #2af;padding:3px 6px">
-          <option value="off">Off</option>
-          <option value="protan">Protanopia (red-blind)</option>
-          <option value="deutan">Deuteranopia (green-blind)</option>
-          <option value="tritan">Tritanopia (blue-blind)</option>
-        </select>
-      </div>
-      <div class="row">Brightness
-        <input type="range" id="setBright" min="0.5" max="1.5" step="0.05" style="flex:1">
-        <span id="setBrightVal" style="min-width:36px;text-align:right">1.00</span>
-      </div>
-      <div class="row"><label><input type="checkbox" id="setBgStars"> Background stars</label></div>
-      <h4 style="color:#fd6;margin:14px 0 6px 0;border-bottom:1px solid #234;padding-bottom:4px">Audio</h4>
-      <div class="row">Master
-        <input type="range" id="setVolMaster" min="0" max="1" step="0.05" style="flex:1">
-        <span id="setVolMasterVal" style="min-width:36px;text-align:right">100%</span>
-      </div>
-      <div class="row">Music
-        <input type="range" id="setVolMusic" min="0" max="1" step="0.05" style="flex:1">
-        <span id="setVolMusicVal" style="min-width:36px;text-align:right">100%</span>
-      </div>
-      <div class="row">SFX
-        <input type="range" id="setVolSfx" min="0" max="1" step="0.05" style="flex:1">
-        <span id="setVolSfxVal" style="min-width:36px;text-align:right">100%</span>
-      </div>
-      <h4 style="color:#fd6;margin:14px 0 6px 0;border-bottom:1px solid #234;padding-bottom:4px">Controls</h4>
-      <div class="dim" style="font-size:11px;margin-bottom:6px">Click a slot then press a key. Your ship won't respond to keys while a slot is highlighted.</div>
-      <div id="setBindings"></div>
-      <div class="row" style="margin-top:8px"><button onclick="Game.resetBindings()">Reset bindings to defaults</button></div>
-    </div>
-  </div>
   <div id="answerModal" class="panel" style="display:none;left:50%;top:50%;transform:translate(-50%,-50%);width:min(540px,92vw);z-index:11">
     <h3>Receive Answer <button onclick="Game.closeAnswerModal()" style="float:right;font-size:11px;padding:3px 8px;min-height:0">Cancel</button></h3>
     <div class="body">
@@ -319,6 +283,45 @@
     <div class="body">
       <canvas id="mmcv" width="320" height="320"></canvas>
     </div>
+  </div>
+</div>
+
+<!-- Settings modal lives outside #stage so the brightness filter (applied to #stage)
+     doesn't dim the controls — otherwise you couldn't read the sliders to bring it back up. -->
+<div id="settingsModal" class="panel" style="display:none;position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(520px,92vw);max-height:88vh;z-index:1000;overflow:auto">
+  <h3>Settings <button onclick="Game.closeSettings()" style="float:right;font-size:11px;padding:3px 8px;min-height:0">Close</button></h3>
+  <div class="body" style="font-size:12px">
+    <h4 style="color:#fd6;margin:0 0 6px 0;border-bottom:1px solid #234;padding-bottom:4px">Video</h4>
+    <div class="row">Color-blind mode
+      <select id="setCb" style="background:#012;color:#cfe;border:1px solid #2af;padding:3px 6px">
+        <option value="off">Off</option>
+        <option value="protan">Protanopia (red-blind)</option>
+        <option value="deutan">Deuteranopia (green-blind)</option>
+        <option value="tritan">Tritanopia (blue-blind)</option>
+      </select>
+    </div>
+    <div class="row">Brightness
+      <input type="range" id="setBright" min="0.5" max="1.5" step="0.05" style="flex:1">
+      <span id="setBrightVal" style="min-width:36px;text-align:right">1.00</span>
+    </div>
+    <div class="row"><label><input type="checkbox" id="setBgStars"> Background stars</label></div>
+    <h4 style="color:#fd6;margin:14px 0 6px 0;border-bottom:1px solid #234;padding-bottom:4px">Audio</h4>
+    <div class="row">Master
+      <input type="range" id="setVolMaster" min="0" max="1" step="0.05" style="flex:1">
+      <span id="setVolMasterVal" style="min-width:36px;text-align:right">100%</span>
+    </div>
+    <div class="row">Music
+      <input type="range" id="setVolMusic" min="0" max="1" step="0.05" style="flex:1">
+      <span id="setVolMusicVal" style="min-width:36px;text-align:right">100%</span>
+    </div>
+    <div class="row">SFX
+      <input type="range" id="setVolSfx" min="0" max="1" step="0.05" style="flex:1">
+      <span id="setVolSfxVal" style="min-width:36px;text-align:right">100%</span>
+    </div>
+    <h4 style="color:#fd6;margin:14px 0 6px 0;border-bottom:1px solid #234;padding-bottom:4px">Controls</h4>
+    <div class="dim" style="font-size:11px;margin-bottom:6px">Click a slot then press a key. Your ship won't respond to keys while a slot is highlighted.</div>
+    <div id="setBindings"></div>
+    <div class="row" style="margin-top:8px"><button onclick="Game.resetBindings()">Reset bindings to defaults</button></div>
   </div>
 </div>
 
@@ -1008,11 +1011,10 @@ const Game=(()=>{
     save(){ try{ localStorage.setItem(this.KEY, JSON.stringify(this.data)); }catch(_){} },
     applyAll(){ this.applyVideo(); this.applyAudio(); },
     applyVideo(){
-      const cv = document.getElementById('cv');
-      const fx = document.getElementById('fx');
-      const filter = `brightness(${this.data.video.brightness})`;
-      if(cv) cv.style.filter = filter;
-      if(fx) fx.style.filter = filter;
+      // Apply brightness to the whole stage (game canvas + HUD + topbar + lobby/hub modals).
+      // Settings modal lives outside #stage and so stays at full brightness — always readable.
+      const stage = document.getElementById('stage');
+      if(stage) stage.style.filter = `brightness(${this.data.video.brightness})`;
       document.body.classList.toggle('no-bg-stars', !this.data.video.bgStars);
       document.body.dataset.cb = this.data.video.colorblind;
     },
