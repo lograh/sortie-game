@@ -5205,12 +5205,41 @@ const Game=(()=>{
       if(rb!==ra) return rb-ra;
       return (b.kills||0)-(a.kills||0);
     });
-    let h='<table><thead><tr><th>#</th><th>Player</th><th>Team</th><th>K</th><th>D</th><th>K/D</th><th>Score</th></tr></thead><tbody>';
+    let h='';
+    if(state.gameMode==='infection'){
+      // Find the last clean human (the winner). If nobody is left clean, it's a clean sweep.
+      const cleanHumans = Object.values(state.players)
+        .filter(p => p && !p.pirate && !p.trader && !p.ai && !p.infected && p.alive);
+      if(cleanHumans.length === 1){
+        const winner = cleanHumans[0];
+        const isMe = winner.id === state.me.id;
+        h += `<div class="row" style="font-size:18px;text-align:center;margin:6px 0 14px 0">
+          🏆 <b style="color:var(--ui-text-highlight)">Survivor: ${esc(winner.name)}</b>${isMe?' (you!)':''}
+        </div>`;
+      } else if(cleanHumans.length === 0){
+        h += `<div class="row" style="font-size:18px;text-align:center;margin:6px 0 14px 0">
+          🦠 <b style="color:#9c3">Total infection — no survivors</b>
+        </div>`;
+      } else {
+        // Round ended with multiple still alive (e.g., timer hit). List them.
+        const names = cleanHumans.map(p => esc(p.name)).join(', ');
+        h += `<div class="row" style="font-size:16px;text-align:center;margin:6px 0 14px 0">
+          🏆 <b style="color:var(--ui-text-highlight)">Survivors: ${names}</b>
+        </div>`;
+      }
+    }
+    h += '<table><thead><tr><th>#</th><th>Player</th><th>Team</th><th>K</th><th>D</th><th>K/D</th><th>Score</th></tr></thead><tbody>';
     rows.forEach((p,i)=>{
       const k=p.kills||0, d=p.deaths||0;
       const kd=d===0?(k>0?k+'.00':'—'):(k/d).toFixed(2);
       const cls=p.id===state.me.id?'you':'';
-      h+=`<tr class="${cls}"><td>${i+1}</td><td>${esc(p.name)}</td><td>${p.team}</td><td>${k}</td><td>${d}</td><td>${kd}</td><td>${p.score||0}</td></tr>`;
+      // Infection mode: show the original team and a 🦠 marker for infected players.
+      let teamCell = ''+p.team;
+      if(state.gameMode==='infection'){
+        const origTeam = p._originalTeam ?? p.team;
+        teamCell = ''+origTeam + (p.infected?' 🦠':'');
+      }
+      h+=`<tr class="${cls}"><td>${i+1}</td><td>${esc(p.name)}</td><td>${teamCell}</td><td>${k}</td><td>${d}</td><td>${kd}</td><td>${p.score||0}</td></tr>`;
     });
     h+='</tbody></table><div class="row" style="margin-top:12px"><button onclick="Game.resetForNextRound()">Back to lobby</button></div>';
     document.getElementById('endBody').innerHTML=h;
