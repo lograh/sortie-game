@@ -1973,7 +1973,7 @@ const Game=(()=>{
     for(const e of (entities||[])){
       const type = e.type || 'bot';
       const owner = e.ownerId || state.me.id;
-      const dormant = (e.wakeTick||0) > 0;
+      const dormant = e.dormant !== undefined ? !!e.dormant : ((e.wakeTick||0) > 0);
       let ent = null, idList = null;
       if(type === 'bot'){
         ent = spawnPlayer(e.id, e.name, e.team||0);
@@ -1998,6 +1998,21 @@ const Game=(()=>{
           wanderTarget: null, wanderCd: 0
         };
         const s = shipStats(ent); ent.maxHp = s.maxHp; ent.hp = ent.maxHp; ent._mass = s.mass;
+        idList = state.pirateIds;
+      } else if(type === 'king'){
+        ent = {
+          id: e.id, name: e.name || 'Pirate King', team: e.team || 9, pirate: true, king: true,
+          x: e.x || 0, y: e.y || 0, vx: 0, vy: 0, rot: e.rot || 0,
+          layout: makeKingLayout(), hp: 0, maxHp: 0, fireCd: 0,
+          shield:0, shieldMax:0, shieldCd:0, boost:0, boostMax:0,
+          kills:0, deaths:0, creds:0, materials:{iron:0,silicon:0,carbon:0,rare:0},
+          alive: true, respawn: 0, grace: 0, docked: false, thrusting: false,
+          wanderTarget: null, wanderCd: 0
+        };
+        const s = shipStats(ent);
+        ent.maxHp = Math.floor(s.maxHp*2.0); ent.hp = ent.maxHp;
+        ent.shieldMax = s.shieldMax; ent.shield = ent.shieldMax;
+        ent._mass = s.mass;
         idList = state.pirateIds;
       } else if(type === 'trader'){
         ent = {
@@ -2027,9 +2042,21 @@ const Game=(()=>{
     for(const id in state.players){
       const p = state.players[id];
       if(!p || !p._dormant) continue;
-      if(state.tick < (p._wakeTick||0)) continue;
+      // Tick-based wake (bots, pirates, traders) vs kill-count wake (king).
+      const tickWake = (p._wakeTick !== undefined && state.tick >= p._wakeTick);
+      const killWake = (p.king && state.piratesKilled >= 8 && p._ownerId === state.me.id);
+      if(!tickWake && !killWake) continue;
       p._dormant = false;
-      if(p.pirate) chatLine('⚠ pirate appeared');
+      // King's pre-spawned (0,0) needs replacing with a real spawn point at wake time.
+      if(p.king){
+        const ang = Math.random()*Math.PI*2;
+        const r = 2500 + Math.random()*WORLD*0.4;
+        p.x = Math.cos(ang)*r; p.y = Math.sin(ang)*r;
+        p.rot = Math.random()*Math.PI*2;
+        state.kingActive = true;
+        chatLine('☠ PIRATE KING has arrived!');
+        killFeed('☠ Pirate King appeared');
+      } else if(p.pirate) chatLine('⚠ pirate appeared');
       if(p._ownerId === state.me.id){
         if(p.pirate && !state.pirateIds.includes(id)) state.pirateIds.push(id);
         else if(p.trader && !state.traderIds.includes(id)) state.traderIds.push(id);
@@ -2333,7 +2360,23 @@ const Game=(()=>{
     tickEntityWakes();
     // pirate AI — roam, attack any visible player
     for(const pid of state.pirateIds){
-      const pr=state.players[pid]; if(!pr || !pr.alive) continue;
+      const pr=state.players[pid]; if(!pr) continue;
+      // Respawn dead pirates after a short timer (kings stay dead — they're despawned outright).
+      if(!pr.alive){
+        if(!pr.king && pr.respawn > 0){
+          pr.respawn--;
+          if(pr.respawn === 0){
+            const a = Math.random()*Math.PI*2;
+            const r = 2000 + Math.random()*WORLD*0.5;
+            pr.x = Math.cos(a)*r; pr.y = Math.sin(a)*r;
+            pr.vx = 0; pr.vy = 0;
+            pr.rot = Math.random()*Math.PI*2;
+            pr.alive = true; pr.hp = pr.maxHp; pr.grace = 60;
+            pr.wanderTarget = null; pr.wanderCd = 0;
+          }
+        }
+        continue;
+      }
       const stats=shipStats(pr); pr._mass=stats.mass; pr._heatDecay=stats.heatDecay; pr._maxHeat=stats.maxHeat;
       // pick / cycle a wander target
       pr.wanderCd--;
@@ -2507,24 +2550,26 @@ const Game=(()=>{
           if(p.id===state.me.id){ Sound.hit(); spawnHitArc(p,b); }
           if(p.hp<=0){
             if(p.pirate){
-              // king drops multiple pickups + ends the king event
+              // king drops multiple pickups + ends the king event (king is one-shot)
               if(p.king){
                 for(let i=0;i<5;i++){ spawnPickup(p.x+(Math.random()-0.5)*40, p.y+(Math.random()-0.5)*40); }
                 state.kingActive=false;
                 state.piratesKilled=0;
                 killFeed(shooter?(shooter.name+' ✗ ☠ Pirate King — JACKPOT'):'Pirate King destroyed');
                 chatLine('☠ Pirate King defeated!');
+                spawnExplosion(p.x,p.y,40); Sound.explosion();
+                despawnNpc(state.pirateIds,p.id);
               } else {
                 spawnPickup(p.x,p.y);
                 state.piratesKilled++;
-                if(state.piratesKilled>=8 && !state.kingActive){
-                  spawnPirateKing();
-                }
                 if(shooter && !shooter.pirate){ killFeed(shooter.name+' ✗ '+p.name+' (loot!)'); }
                 else killFeed(p.name+' destroyed');
+                spawnExplosion(p.x,p.y,18); Sound.explosion();
+                // Pirates respawn after a short delay (owner ticks it down in the AI loop).
+                p.alive = false;
+                p.respawn = 600;  // 10 seconds
+                // Don't remove from state.players or pirateIds — owner will revive it in place.
               }
-              spawnExplosion(p.x,p.y,p.king?40:18); Sound.explosion();
-              despawnNpc(state.pirateIds,p.id);
             } else {
               p.alive=false; p.respawn = state.gameMode==='race'?120:180; p.deaths++;
               // race: stun then revive in place; no inventory/material wipe
@@ -4112,6 +4157,15 @@ const Game=(()=>{
         nextTraderTick += (120 + Math.floor(Math.random()*60)) * 60;
       }
     }
+    // 4) Pirate King — pre-allocated, dormant until 8 pirates have been killed.
+    entities.push({
+      id: 'pirate_king_'+rid(),
+      name: 'Pirate King', team: 9,
+      ownerId: playerIds[(ownerCycle++) % playerIds.length],
+      type: 'king',
+      dormant: true,    // explicit: not tick-based; wakes on kill-count
+      x: 0, y: 0, rot: 0,
+    });
     const totalRacers = playerIds.length + aicount;
     state.pendingStart = { entities, playerHubs, playerSlots, totalRacers, isHost:true, ownerId: state.me.id };
     if(havePeers){
