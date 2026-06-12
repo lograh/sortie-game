@@ -3000,10 +3000,6 @@ const Game=(()=>{
           b._dead=true;
           p.hitFlash=8;
           if(p.id===state.me.id){ Sound.hit(); spawnHitArc(p,b); }
-          // Infection mode: any hit from an infected shooter spreads the infection.
-          if(state.gameMode==='infection' && shooter?.infected && !p.infected){
-            infectPlayer(p, shooter);
-          }
           if(p.hp<=0){
             if(p.pirate){
               // Only one peer should spawn the loot. Killer-spawns so they can pick it up
@@ -3072,6 +3068,32 @@ const Game=(()=>{
           killFeed(me.name+' ☢ radiation');
         }
         spawnExplosion(me.x,me.y,18); Sound.explosion();
+      }
+    }
+
+    // Infection mode: physical contact spreads. Iterate alive ship pairs, infect
+    // any clean ship close enough to an infected one. ~38u catches contact between
+    // typical 18u-radius hulls without being so generous you can't run away.
+    if(state.gameMode==='infection' && !state.roundEnded){
+      const INFECT_RANGE2 = 38*38;
+      const alive = [];
+      for(const id in state.players){
+        const p = state.players[id];
+        if(p && p.alive && !p.docked && (p.grace||0) <= 0) alive.push(p);
+      }
+      for(let i=0;i<alive.length;i++){
+        const a = alive[i];
+        for(let j=i+1;j<alive.length;j++){
+          const b = alive[j];
+          // Only mixed-status pairs are interesting.
+          if(a.infected === b.infected) continue;
+          const dx = a.x - b.x, dy = a.y - b.y;
+          if(dx*dx + dy*dy < INFECT_RANGE2){
+            const spreader = a.infected ? a : b;
+            const victim   = a.infected ? b : a;
+            infectPlayer(victim, spreader);
+          }
+        }
       }
     }
 
