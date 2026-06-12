@@ -290,6 +290,8 @@
           <div class="row">Name <input id="pname" value="" style="background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px"></div>
           <div class="row">AI bots <input id="aicount" type="number" min="0" max="12" value="2" style="width:64px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px">
             <span class="dim">— added to the game when you start / connect</span></div>
+          <div class="row"><label><input id="otherNpc" type="checkbox" checked> Other NPCs (pirates, traders, king)</label>
+            <span class="dim">— uncheck for a pure asteroids experience</span></div>
           <div class="row">AI teams <input id="aiTeamCount" type="number" min="0" max="5" value="0" style="width:64px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px">
             <span class="dim">— 0 = all neutral, N = bots split across N teams</span></div>
           <div class="row">World size
@@ -958,7 +960,7 @@ const Game=(()=>{
       layout,hp:0,maxHp:0,fireCd:0,heat:0,
       shield:0,shieldMax:0,shieldCd:0,
       boost:0,boostMax:0,boosting:false,
-      kills:0,deaths:0,creds:50,materials:{iron:0,silicon:0,carbon:0,rare:0},alive:true,respawn:0};
+      kills:0,deaths:0,creds:50,score:0,materials:{iron:0,silicon:0,carbon:0,rare:0},alive:true,respawn:0};
     const s=shipStats(p); p.maxHp=s.maxHp; p.hp=s.maxHp; p.shieldMax=s.shieldMax; p.shield=s.shieldMax; p.boostMax=s.boostCap; p.boost=s.boostCap;
     return p;
   }
@@ -2423,7 +2425,11 @@ const Game=(()=>{
       if(p && p.materials){
         const yield_=Math.max(1,Math.floor(a.r/15));
         p.materials[a.mat]=(p.materials[a.mat]||0)+yield_;
-        if(a._killer===state.me.id) chatLine('+'+yield_+' '+a.mat);
+        // Classic-arcade score: base for the break, plus a per-unit yield weighted by rarity.
+        const MAT_VALUE = {iron:1, silicon:2, carbon:3, rare:8};
+        const points = 10 + yield_ * (MAT_VALUE[a.mat]||1);
+        p.score = (p.score||0) + points;
+        if(a._killer===state.me.id) chatLine('+'+yield_+' '+a.mat+' · +'+points+' pts');
       }
     }
     if(a.r>30){
@@ -3287,7 +3293,7 @@ const Game=(()=>{
       `<span style="color:${me.overheated?'var(--ui-bad-border)':me.heat>70?'var(--ui-text-heat-mid)':'var(--ui-text-hud)'}">Heat ${Math.round(me.heat||0)}${me.overheated?' OVERHEATED':''}</span><br>`+
       `Credits: ${me.creds||0}<br>`+
       `Iron ${me.materials.iron} | Si ${me.materials.silicon} | C ${me.materials.carbon} | Rare ${me.materials.rare}<br>`+
-      `K/D: ${me.kills||0}/${me.deaths||0}`+
+      `K/D: ${me.kills||0}/${me.deaths||0} · Score: ${me.score||0}`+
       (state.nearPlatform?'<br><span style="color:var(--ui-good-bright)">⚓ at a hub — tap Dock</span>':'');
     // live leaderboard
     const pp=document.getElementById('peers');
@@ -4806,12 +4812,12 @@ const Game=(()=>{
       if(rb!==ra) return rb-ra;
       return (b.kills||0)-(a.kills||0);
     });
-    let h='<table><thead><tr><th>#</th><th>Player</th><th>Team</th><th>K</th><th>D</th><th>K/D</th></tr></thead><tbody>';
+    let h='<table><thead><tr><th>#</th><th>Player</th><th>Team</th><th>K</th><th>D</th><th>K/D</th><th>Score</th></tr></thead><tbody>';
     rows.forEach((p,i)=>{
       const k=p.kills||0, d=p.deaths||0;
       const kd=d===0?(k>0?k+'.00':'—'):(k/d).toFixed(2);
       const cls=p.id===state.me.id?'you':'';
-      h+=`<tr class="${cls}"><td>${i+1}</td><td>${esc(p.name)}</td><td>${p.team}</td><td>${k}</td><td>${d}</td><td>${kd}</td></tr>`;
+      h+=`<tr class="${cls}"><td>${i+1}</td><td>${esc(p.name)}</td><td>${p.team}</td><td>${k}</td><td>${d}</td><td>${kd}</td><td>${p.score||0}</td></tr>`;
     });
     h+='</tbody></table><div class="row" style="margin-top:12px"><button onclick="Game.resetForNextRound()">Back to lobby</button></div>';
     document.getElementById('endBody').innerHTML=h;
@@ -5000,47 +5006,51 @@ const Game=(()=>{
       }
       entities.push(e);
     }
-    // 2) Pirates — 4 of them, staggered every ~45-60s from t=60s
-    let nextPirateTick = 60*60;
+    // Lobby toggle: when unchecked, skip pirates/traders/king for a pure asteroids feel.
+    const enableNpcs = document.getElementById('otherNpc')?.checked !== false;
     let ownerCycle = aicount;
-    for(let i=0;i<4;i++){
-      const id = 'pirate_'+rid();
-      const ang = Math.random()*Math.PI*2;
-      const r = 2000 + Math.random()*WORLD*0.5;
-      entities.push({
-        id, name:'Pirate', team:9, ownerId: playerIds[(ownerCycle++) % playerIds.length],
-        type:'pirate', wakeTick: nextPirateTick,
-        x: Math.cos(ang)*r, y: Math.sin(ang)*r, rot: Math.random()*Math.PI*2,
-      });
-      nextPirateTick += (45 + Math.floor(Math.random()*15)) * 60;
-    }
-    // 3) Traders — 2 of them (if there's somewhere to trade between), spaced ~3 min apart
-    if(state.platforms.length>=2){
-      let nextTraderTick = 90*60;
-      for(let i=0;i<2;i++){
-        const startIdx = Math.floor(Math.random()*state.platforms.length);
-        let targetIdx; do { targetIdx = Math.floor(Math.random()*state.platforms.length); } while(targetIdx===startIdx);
-        const start = state.platforms[startIdx];
-        const id = 'trader_'+rid();
+    if(enableNpcs){
+      // 2) Pirates — 4 of them, staggered every ~45-60s from t=60s
+      let nextPirateTick = 60*60;
+      for(let i=0;i<4;i++){
+        const id = 'pirate_'+rid();
+        const ang = Math.random()*Math.PI*2;
+        const r = 2000 + Math.random()*WORLD*0.5;
         entities.push({
-          id, name:'Trader', team:8, ownerId: playerIds[(ownerCycle++) % playerIds.length],
-          type:'trader', wakeTick: nextTraderTick,
-          x: start.x, y: start.y, rot: 0,
-          targetHubIdx: targetIdx,
-          stock: randomTraderStock(),
+          id, name:'Pirate', team:9, ownerId: playerIds[(ownerCycle++) % playerIds.length],
+          type:'pirate', wakeTick: nextPirateTick,
+          x: Math.cos(ang)*r, y: Math.sin(ang)*r, rot: Math.random()*Math.PI*2,
         });
-        nextTraderTick += (120 + Math.floor(Math.random()*60)) * 60;
+        nextPirateTick += (45 + Math.floor(Math.random()*15)) * 60;
       }
+      // 3) Traders — 2 of them (if there's somewhere to trade between), spaced ~3 min apart
+      if(state.platforms.length>=2){
+        let nextTraderTick = 90*60;
+        for(let i=0;i<2;i++){
+          const startIdx = Math.floor(Math.random()*state.platforms.length);
+          let targetIdx; do { targetIdx = Math.floor(Math.random()*state.platforms.length); } while(targetIdx===startIdx);
+          const start = state.platforms[startIdx];
+          const id = 'trader_'+rid();
+          entities.push({
+            id, name:'Trader', team:8, ownerId: playerIds[(ownerCycle++) % playerIds.length],
+            type:'trader', wakeTick: nextTraderTick,
+            x: start.x, y: start.y, rot: 0,
+            targetHubIdx: targetIdx,
+            stock: randomTraderStock(),
+          });
+          nextTraderTick += (120 + Math.floor(Math.random()*60)) * 60;
+        }
+      }
+      // 4) Pirate King — pre-allocated, dormant until 8 pirates have been killed.
+      entities.push({
+        id: 'pirate_king_'+rid(),
+        name: 'Pirate King', team: 9,
+        ownerId: playerIds[(ownerCycle++) % playerIds.length],
+        type: 'king',
+        dormant: true,
+        x: 0, y: 0, rot: 0,
+      });
     }
-    // 4) Pirate King — pre-allocated, dormant until 8 pirates have been killed.
-    entities.push({
-      id: 'pirate_king_'+rid(),
-      name: 'Pirate King', team: 9,
-      ownerId: playerIds[(ownerCycle++) % playerIds.length],
-      type: 'king',
-      dormant: true,    // explicit: not tick-based; wakes on kill-count
-      x: 0, y: 0, rot: 0,
-    });
     const totalRacers = playerIds.length + aicount;
     state.pendingStart = { entities, playerHubs, playerSlots, totalRacers, isHost:true, ownerId: state.me.id };
     if(havePeers){
