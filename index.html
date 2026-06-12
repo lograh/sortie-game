@@ -2742,7 +2742,9 @@ const Game=(()=>{
         const dist=Math.sqrt(bestD);
         // Checkpoints are fly-through, not loiter — keep thrusting until you pass them.
         const isCheckpoint = state.gameMode==='race' && !isShip;
-        const close = isShip ? 500 : (isCheckpoint ? 0 : 300);
+        // Infected bots in infection mode want to ram — close to contact distance.
+        const infectionRam = state.gameMode==='infection' && bot.infected && isShip;
+        const close = infectionRam ? 20 : (isShip ? 500 : (isCheckpoint ? 0 : 300));
         const inRace = state.gameMode==='race';
         // Race: full throttle and burn boost on aligned straightaways. Non-race keeps 0.7 patrol speed.
         const wantBoost = inRace && !danger && bot.boost>0 && bot.boostMax>0 && Math.abs(diff)<0.25;
@@ -2760,8 +2762,10 @@ const Game=(()=>{
         const targetingCheckpoint = state.gameMode==='race' && !isShip && gotTarget;
         // "no combat" race only suppresses racer-vs-racer fire; pirates are always fair game.
         const suppressRacerFire = state.gameMode==='race' && !state.raceCombat && isShip && targetShip && !targetShip.pirate;
+        // Infected bots are committing to ram — no point heating up the guns.
+        const suppressInfectionFire = state.gameMode==='infection' && bot.infected;
         const aimedAndReady = !danger && Math.abs(diff)<0.18 && bot.fireCd<=0;
-        let fire = aimedAndReady && !targetingCheckpoint && !suppressRacerFire;
+        let fire = aimedAndReady && !targetingCheckpoint && !suppressRacerFire && !suppressInfectionFire;
         // Combat race: bots stay on the racing line but opportunistically shoot any hostile
         // ship that drifts into their forward cone (they wouldn't otherwise — target is a checkpoint).
         if(!fire && aimedAndReady && state.gameMode==='race' && state.raceCombat){
@@ -2856,14 +2860,17 @@ const Game=(()=>{
       while(diff<-Math.PI)diff+=Math.PI*2;
       pr.rot+=Math.max(-stats.turn,Math.min(stats.turn,diff));
       const dist=Math.sqrt(isCombat?bestD:(dx*dx+dy*dy));
-      const close=isCombat?500:80;
+      // Infected pirates in infection mode ram instead of orbit-and-shoot.
+      const prInfectionRam = state.gameMode==='infection' && pr.infected && isCombat;
+      const close = prInfectionRam ? 20 : (isCombat?500:80);
       const thrustMult = danger?1.0 : 0.6;
       if((dist>close || danger) && Math.abs(diff)<0.7){
         pr.vx+=Math.cos(pr.rot)*stats.thrust*thrustMult;
         pr.vy+=Math.sin(pr.rot)*stats.thrust*thrustMult;
         pr.thrusting=true;
       } else { pr.thrusting=false; }
-      if(!danger && isCombat && Math.abs(diff)<0.18 && pr.fireCd<=0){ fireGuns(pr); }
+      // Don't waste fire CD / heat on ramming runs — guns can't infect.
+      if(!danger && isCombat && !prInfectionRam && Math.abs(diff)<0.18 && pr.fireCd<=0){ fireGuns(pr); }
       pr.fireCd=Math.max(0,pr.fireCd-1);
       const maxSp=danger?10:7;
       const sp=Math.hypot(pr.vx,pr.vy); if(sp>maxSp){ pr.vx*=maxSp/sp; pr.vy*=maxSp/sp; }
