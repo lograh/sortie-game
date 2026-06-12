@@ -728,6 +728,18 @@ const Game=(()=>{
     for(let i=0;i<s.length;i++) h=((h<<5)-h+s.charCodeAt(i))|0;
     return h>>>0;
   }
+  // Pick a hub index by hashing the id, then linear-probing past any already-claimed
+  // hubs. Records the choice in `claimed` so subsequent callers won't reuse it.
+  function pickHubFor(id, claimed){
+    const hubs=state.platforms; if(!hubs.length) return -1;
+    const N=hubs.length;
+    const start=hashStr(id)%N;
+    for(let k=0;k<N;k++){
+      const i=(start+k)%N;
+      if(claimed.indexOf(i)<0){ claimed.push(i); return i; }
+    }
+    claimed.push(start); return start;
+  }
   // Push a spawn point just outside any radioactive nebula it lands inside.
   // Used as a safety net — world-gen also tries to keep nebulae off platforms.
   function nudgeOutOfRadiation(x, y){
@@ -1330,10 +1342,11 @@ const Game=(()=>{
       p.x=pose.x; p.y=pose.y; p.vx=0; p.vy=0; p.rot=pose.rot;
       p.checkpoint=0; p.lap=0; p.raceTime=0;
     } else {
-      // Hash-based hub pick so multiple humans don't all spawn at platforms[0].
-      const hubs=state.platforms;
-      if(hubs.length){
-        const hub=hubs[hashStr(state.me.id)%hubs.length];
+      // Hash-based hub pick + linear-probe so player and all bots get distinct hubs
+      // (works for any total ≤ platform count, currently 24).
+      state._claimedHubs = [];
+      if(state.platforms.length){
+        const hub=state.platforms[pickHubFor(state.me.id, state._claimedHubs)];
         p.x=hub.x; p.y=hub.y; p.vx=0; p.vy=0;
       }
     }
@@ -1784,7 +1797,8 @@ const Game=(()=>{
         bot.rot=pose.rot;
         bot.checkpoint=0; bot.lap=0;
       } else {
-        const hub=state.platforms[(i+1)%state.platforms.length];
+        const claimed = state._claimedHubs || (state._claimedHubs=[]);
+        const hub = state.platforms[pickHubFor(id, claimed)];
         if(hub){
           const a=Math.random()*Math.PI*2, r=hub.r+PLATFORM_DEFENSE+200+Math.random()*400;
           bot.x=hub.x+Math.cos(a)*r; bot.y=hub.y+Math.sin(a)*r;
