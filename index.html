@@ -2536,11 +2536,11 @@ const Game=(()=>{
     // Speed cap so headers don't fling it out of the world
     const sp = Math.hypot(ball.vx, ball.vy);
     if(sp > BALL_MAX_SPEED){ ball.vx *= BALL_MAX_SPEED/sp; ball.vy *= BALL_MAX_SPEED/sp; }
-    // World edge bounce (lossy)
-    if(ball.x >  WORLD){ ball.x =  WORLD; ball.vx = -Math.abs(ball.vx)*0.7; }
-    if(ball.x < -WORLD){ ball.x = -WORLD; ball.vx =  Math.abs(ball.vx)*0.7; }
-    if(ball.y >  WORLD){ ball.y =  WORLD; ball.vy = -Math.abs(ball.vy)*0.7; }
-    if(ball.y < -WORLD){ ball.y = -WORLD; ball.vy =  Math.abs(ball.vy)*0.7; }
+    // World wrap — matches the player/asteroid topology (no walls in space).
+    if(ball.x >  WORLD) ball.x = -WORLD;
+    if(ball.x < -WORLD) ball.x =  WORLD;
+    if(ball.y >  WORLD) ball.y = -WORLD;
+    if(ball.y < -WORLD) ball.y =  WORLD;
     // Gravity wells
     for(const w of state.gravWells){
       const dx = w.x - ball.x, dy = w.y - ball.y;
