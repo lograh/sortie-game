@@ -631,8 +631,9 @@ function makeRng(seed){
   };
 }
 const Game=(()=>{
-  // Persistent per-tab id so a refresh keeps your slot in an existing mesh.
-  // sessionStorage is tab-scoped, so two tabs in the same browser still get different ids.
+  // Per-tab id, persisted in sessionStorage so a refresh keeps the same id (useful if you
+  // re-handshake into the same mesh — though there's no automatic reconnect, you'd still
+  // need to redo the offer/answer flow). Two tabs in the same browser get different ids.
   let _myId = null;
   try { _myId = sessionStorage.getItem('sortie_id') || null; } catch(_){}
   if(!_myId){ _myId = rid(); try { sessionStorage.setItem('sortie_id', _myId); } catch(_){} }
@@ -1155,6 +1156,17 @@ const Game=(()=>{
         ownerId: from
       };
       startPlaying();
+    } else if(m.kind==='pirate_killed'){
+      // Killer broadcasts on each fresh pirate kill so we all increment exactly once.
+      state.piratesKilled++;
+    } else if(m.kind==='king_active'){
+      // King's owner is announcing the wake; mirror locally on every peer so the
+      // intensity bump and announcement match across machines.
+      if(!state.kingActive){
+        state.kingActive = true;
+        chatLine('☠ PIRATE KING has arrived!');
+        killFeed('☠ Pirate King appeared');
+      }
     } else if(m.kind==='pickup_taken'){
       const idx = state.pickups.findIndex(pk => pk.id === m.id);
       if(idx >= 0) state.pickups.splice(idx, 1);
@@ -1222,7 +1234,9 @@ const Game=(()=>{
 
   /* -------- Auto-introduction: build a full mesh through relays -------- */
   async function autoOfferTo(remoteId){
-    if(!remoteId || remoteId===state.me.id || Net.routes[remoteId]) return;
+    // Skip only if we already have a *direct* dc. `Net.routes` can hold relay-only entries
+    // from forwarded signal traffic; those don't count as having a real link.
+    if(!remoteId || remoteId===state.me.id || Net.directRoutes[remoteId]) return;
     const sigId = rid();
     const pc = new RTCPeerConnection(ICE);
     const dc = pc.createDataChannel('g');
@@ -2105,6 +2119,9 @@ const Game=(()=>{
         state.kingActive = true;
         chatLine('☠ PIRATE KING has arrived!');
         killFeed('☠ Pirate King appeared');
+        // Tell every peer the king is up — they wouldn't otherwise know to bump
+        // intensity or show the boss announcement.
+        try { Net.broadcast({kind:'king_active', id}); } catch(_){}
       } else if(p.pirate) chatLine('⚠ pirate appeared');
       if(p._ownerId === state.me.id){
         if(p.pirate && !state.pirateIds.includes(id)) state.pirateIds.push(id);
@@ -2614,8 +2631,14 @@ const Game=(()=>{
                 spawnExplosion(p.x,p.y,40); Sound.explosion();
                 despawnNpc(state.pirateIds,p.id);
               } else {
-                if(iSpawn) spawnPickup(p.x,p.y, true);
-                state.piratesKilled++;
+                if(iSpawn){
+                  spawnPickup(p.x,p.y, true);
+                  // Counter is only incremented (and broadcast) by the killer — otherwise
+                  // every peer's local collision pass triples-up the count and respawn cycles
+                  // would also re-count the same pirate's later deaths.
+                  state.piratesKilled++;
+                  try { Net.broadcast({kind:'pirate_killed'}); } catch(_){}
+                }
                 if(shooter && !shooter.pirate){ killFeed(shooter.name+' ✗ '+p.name+' (loot!)'); }
                 else killFeed(p.name+' destroyed');
                 spawnExplosion(p.x,p.y,18); Sound.explosion();
@@ -2828,6 +2851,8 @@ const Game=(()=>{
     const pulseT=performance.now()*0.005;
     for(const id in state.players){
       const p=state.players[id]; if(!p.alive) continue;
+      // Hide dropped peers' last-known ship — DNF in leaderboard is the only reminder of them.
+      if(p._status==='dropped') continue;
       if(p.docked){
         const pulse=0.6+0.4*Math.sin(pulseT);
         ships.push(p.x,p.y,30+pulse*4,p.rot,1.0*pulse,0.5*pulse,0.05,1);
@@ -4324,15 +4349,16 @@ const Game=(()=>{
   function shareUrlFor(role, packed){
     return location.origin + location.pathname + '#' + role + '=' + packed;
   }
-  function showShareUrl(url){
+  async function showShareUrl(url){
     lastShareUrl = url;
     const el = document.getElementById('sdpLink');
     if(el){ el.style.display='block'; el.textContent = url; }
     const row = document.getElementById('sdpShareRow');
     if(row) row.style.display = '';
-    // Best-effort auto-copy so the user doesn't strictly need the Share button
-    // (which would background Safari and risk iOS dropping the WebRTC connection).
-    try { navigator.clipboard.writeText(url); } catch(_) {}
+    // Best-effort auto-copy. iOS Safari can reject without a user gesture (or in some
+    // page-load orderings), so we report back so callers don't lie about it.
+    try { await navigator.clipboard.writeText(url); return true; }
+    catch(_) { return false; }
   }
   function clearShareUrl(){
     lastShareUrl=null;
@@ -4395,10 +4421,10 @@ const Game=(()=>{
       if(!e.candidate){
         const sdp = JSON.stringify(pc.localDescription);
         const url = shareUrlFor('offer', await packSdp(sdp));
-        showShareUrl(url);
+        const copied = await showShareUrl(url);
         setLobbyStatus(retry
           ? 'Link refreshed (iOS suspended us). Share THIS new link if you haven\'t connected yet.'
-          : 'Offer link ready — copied to clipboard. Send it to your friend.');
+          : 'Offer link ready — '+(copied?'copied to clipboard. ':'tap Copy or Share. ')+'Send it to your friend.');
       }
     };
     await pc.setLocalDescription(await pc.createOffer());
@@ -4427,10 +4453,10 @@ const Game=(()=>{
         // Plain (non-URL) form so chat apps don't turn it into a clickable link.
         // The host MUST paste it, not tap it — otherwise they'd reload their own offer tab.
         const blob = 'sortie-answer:'+(await packSdp(sdp));
-        showShareUrl(blob);
+        const copied = await showShareUrl(blob);
         setLobbyStatus(retry
           ? 'Answer refreshed (iOS suspended us). Copy and send THIS new answer back.'
-          : 'Answer ready — copied to clipboard. Send it back to the host.');
+          : 'Answer ready — '+(copied?'copied to clipboard. ':'tap Copy or Share. ')+'Send it back to the host.');
       }
     };
     await pc.setRemoteDescription(off);
@@ -4547,6 +4573,21 @@ const Game=(()=>{
       setLobbyStatus('Answer received via legacy link. Tap Receive Answer and paste the answer string instead.');
     }
   }
+  // Restore the saved player name BEFORE we may auto-accept an inbound offer —
+  // otherwise the cold-link guest gets broadcast with an empty name.
+  const NAME_KEY='sortie_name_v1';
+  try{
+    const saved=localStorage.getItem(NAME_KEY);
+    document.getElementById('pname').value = saved || ('P-'+state.me.id.slice(0,3));
+  } catch(_) {
+    document.getElementById('pname').value='P-'+state.me.id.slice(0,3);
+  }
+  document.getElementById('pname').addEventListener('change', e=>{
+    try{ localStorage.setItem(NAME_KEY, e.target.value); }catch(_){}
+  });
+  document.getElementById('pname').addEventListener('blur', e=>{
+    try{ localStorage.setItem(NAME_KEY, e.target.value); }catch(_){}
+  });
   consumeInboundHash();
   function setupDC(pc,dc){
     const peerId=rid();
@@ -4653,20 +4694,7 @@ const Game=(()=>{
     showRaceOpts();
   }
 
-  // populate initial name (last used, falling back to a random suffix)
-  const NAME_KEY='sortie_name_v1';
-  try{
-    const saved=localStorage.getItem(NAME_KEY);
-    document.getElementById('pname').value = saved || ('P-'+state.me.id.slice(0,3));
-  } catch(_) {
-    document.getElementById('pname').value='P-'+state.me.id.slice(0,3);
-  }
-  document.getElementById('pname').addEventListener('change', e=>{
-    try{ localStorage.setItem(NAME_KEY, e.target.value); }catch(_){}
-  });
-  document.getElementById('pname').addEventListener('blur', e=>{
-    try{ localStorage.setItem(NAME_KEY, e.target.value); }catch(_){}
-  });
+  // (name init moved above consumeInboundHash so cold-link guests broadcast a real name)
   // Build version — uses Last-Modified from GitHub Pages, so it auto-bumps each push.
   try {
     const bv=document.getElementById('buildVersion');
