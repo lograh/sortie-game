@@ -1075,6 +1075,17 @@ const Game=(()=>{
     }
     return total;
   }
+  function layoutCreditCost(g){
+    let total=0;
+    for(let y=0;y<9;y++)for(let x=0;x<9;x++){
+      const c=g[y][x]; if(!c || c.type==='core') continue;
+      let k=c.type;
+      if(c.type==='gun') k='gun_'+(c.variant||'basic');
+      const it=ITEMS[k]; if(!it) continue;
+      total += it.credits || 0;
+    }
+    return total;
+  }
   function cloneLayout(g){
     const out=[];
     for(let y=0;y<9;y++){ const r=[]; for(let x=0;x<9;x++){ r.push(g[y][x]?{...g[y][x]}:null); } out.push(r); }
@@ -2749,17 +2760,24 @@ const Game=(()=>{
     for(const m in cost) if((me.materials[m]||0)<cost[m]) return false;
     return true;
   }
-  function applyDesign(idx){
+  function applyDesign(idx, how){
     const me=state.players[state.me.id]; if(!me) return;
     const d=state.shipLibrary[idx]; if(!d) return;
-    if(!canAfford(me,d.cost)){ chatLine('not enough materials for that design'); return; }
-    for(const m in d.cost) me.materials[m]-=d.cost[m];
+    if(how==='cr'){
+      const credCost=layoutCreditCost(d.layout);
+      if((me.creds||0) < credCost){ chatLine('not enough credits for that design ('+credCost+'cr)'); return; }
+      me.creds -= credCost;
+      chatLine('* applied design #'+(idx+1)+' for '+credCost+'cr');
+    } else {
+      if(!canAfford(me,d.cost)){ chatLine('not enough materials for that design'); return; }
+      for(const m in d.cost) me.materials[m]-=d.cost[m];
+      chatLine('* applied design #'+(idx+1));
+    }
     me.layout=cloneLayout(d.layout);
     const s=shipStats(me); me.maxHp=s.maxHp; me.shieldMax=s.shieldMax; me.boostMax=s.boostCap;
     me.hp=Math.min(me.maxHp,me.hp);
     me.shield=me.shieldMax; // refit gives full shield
     me.boost=me.boostMax;
-    chatLine('* applied design #'+(idx+1));
     renderHub();
   }
   function deleteDesign(idx){
@@ -2833,16 +2851,19 @@ const Game=(()=>{
       for(let i=state.shipLibrary.length-1;i>=0;i--){
         const d=state.shipLibrary[i];
         const costStr=Object.entries(d.cost).filter(([m,n])=>n>0).map(([m,n])=>n+m[0].toUpperCase()).join(' ')||'free';
+        const credCost=layoutCreditCost(d.layout);
         const afford=canAfford(me,d.cost);
+        const affordCr=(me.creds||0) >= credCost;
         const isCurrent=d.hash===myHash;
         lib+=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:5px;border:1px solid ${isCurrent?'#fd6':'#234'};border-radius:4px;background:${isCurrent?'rgba(40,32,4,0.4)':'rgba(8,16,24,0.5)'}">
           ${miniLayoutHtml(d.layout)}
           <div style="flex:1 1 0;min-width:0;font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis">
             <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">#${i+1} ${esc(d.author||'?')}${isCurrent?' <span style="color:#fd6">★</span>':''}</div>
-            <div class="dim" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${costStr}</div>
+            <div class="dim" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${costStr} <span style="color:#789">or</span> ${credCost}cr</div>
           </div>
           <div style="display:flex;flex-direction:column;gap:3px;flex:0 0 auto">
-            <button ${(!afford||isCurrent)?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i})" style="padding:3px 8px;min-height:0;font-size:11px">Apply</button>
+            <button ${(!afford||isCurrent)?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i},'mat')" style="padding:3px 8px;min-height:0;font-size:11px" title="Apply paying materials">Apply (Mat)</button>
+            <button ${(!affordCr||isCurrent)?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i},'cr')" style="padding:3px 8px;min-height:0;font-size:11px" title="Apply paying credits">Apply (${credCost}cr)</button>
             <button class="bad" onclick="Game.deleteDesign(${i})" style="font-size:11px;padding:3px 6px;min-height:0">✕</button>
           </div>
         </div>`;
