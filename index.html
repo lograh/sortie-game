@@ -131,6 +131,19 @@
   .cell.core{background:#a82;color:#000}
   .cell.sel{outline:2px solid #fd6;outline-offset:-2px}
   .cell.swap{outline:2px solid #7df;outline-offset:-2px}
+  /* Color-blind palettes for builder cells. Goal: each module distinguishable from the others
+     for the relevant deficiency, not "realistic" colors. */
+  body[data-cb="protan"] .cell.gun,    body[data-cb="deutan"] .cell.gun    {background:#846}  /* purple */
+  body[data-cb="protan"] .cell.engine, body[data-cb="deutan"] .cell.engine {background:#a72}  /* mustard */
+  body[data-cb="protan"] .cell.repair, body[data-cb="deutan"] .cell.repair {background:#688}  /* silvery */
+  body[data-cb="protan"] .cell.armor,  body[data-cb="deutan"] .cell.armor  {background:#654}  /* warm gray */
+  body[data-cb="tritan"] .cell.hull   {background:#544}
+  body[data-cb="tritan"] .cell.radar  {background:#624}  /* warm dark */
+  body[data-cb="tritan"] .cell.shield {background:#864}
+  body[data-cb="tritan"] .cell.coolant{background:#a64}
+  body[data-cb="tritan"] .cell.scanner{background:#735}
+  /* Native range/checkbox/radio sliders pick up `accent-color` in modern browsers. */
+  input[type=range], input[type=checkbox], input[type=radio]{ accent-color: var(--ui-accent); }
   /* Unique modules — magenta outline so they're visibly distinct from craftables */
   .cell.unique{box-shadow:inset 0 0 0 2px #e6f}
   button.unique{border-color:#e6f;color:#fce}
