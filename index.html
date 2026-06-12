@@ -91,6 +91,11 @@
   .cell.core{background:#a82;color:#000}
   .cell.sel{outline:2px solid #fd6;outline-offset:-2px}
   .cell.swap{outline:2px solid #7df;outline-offset:-2px}
+  /* Unique modules — magenta outline so they're visibly distinct from craftables */
+  .cell.unique{box-shadow:inset 0 0 0 2px #e6f}
+  button.unique{border-color:#e6f;color:#fce}
+  button.unique:hover{background:#404}
+  button.unique.active{background:#404;border-color:#fbf}
   textarea{width:100%;background:#012;color:#cfe;border:1px solid #2af;font-family:inherit;font-size:11px;box-sizing:border-box}
   .row{display:flex;gap:6px;align-items:center;margin:5px 0;flex-wrap:wrap}
   .tag{padding:1px 5px;background:#024;border:1px solid #2af;border-radius:3px;font-size:11px}
@@ -3097,7 +3102,10 @@ const Game=(()=>{
     for(const k of LOBBY_PLACEABLE){
       const lbl = (UNIQUE_ITEMS[k]?UNIQUE_ITEMS[k].name : (ITEMS[k]?ITEMS[k].name : k))
         .replace(/ cell$/,'').replace(/ module$/,'').replace(/-range/,'-rng');
-      h+=`<button class="${L.placeMode===k?'active':''}" style="padding:3px 6px;min-height:0;font-size:11px" onclick="Game.lobbySetPlace('${k}')" title="${k}">${lbl}</button> `;
+      const isUniq = !!UNIQUE_ITEMS[k];
+      const cls = [L.placeMode===k?'active':'', isUniq?'unique':''].filter(Boolean).join(' ');
+      const tip = isUniq ? (k+' (drop/trader only — not buyable)') : k;
+      h+=`<button class="${cls}" style="padding:3px 6px;min-height:0;font-size:11px" onclick="Game.lobbySetPlace('${k}')" title="${tip}">${lbl}</button> `;
     }
     h+=`<button class="${L.placeMode==='__move'?'active':''}" style="padding:3px 6px;min-height:0;font-size:11px" onclick="Game.lobbySetPlace('__move')">⟷ move</button> `;
     h+=`<button class="${L.placeMode==='__remove'?'active':''}" style="padding:3px 6px;min-height:0;font-size:11px" onclick="Game.lobbySetPlace('__remove')">🗑 remove</button> `;
@@ -3116,6 +3124,7 @@ const Game=(()=>{
           const idx=Math.round(aim/(Math.PI/4))%8;
           lbl=arrows[idx];
         }
+        if(c && c.unique) cls+=' unique';
         if(L.selectedCell && L.selectedCell.x===x && L.selectedCell.y===y) cls+=' sel';
         if(L.gunPopover && L.gunPopover.x===x && L.gunPopover.y===y) cls+=' swap';
         h+=`<div class="${cls}" onclick="Game.lobbyBuilderClick(event,${x},${y})">${lbl}</div>`;
@@ -3327,7 +3336,12 @@ const Game=(()=>{
     h+='<div class="row dim">Hull on empty (must be adjacent to ship). Modules on hull cells. Tap a gun for its config.</div>';
     h+='<div class="row"><b>Place:</b> ';
     const inv=me.inventory||{};
-    for(const k in inv){ if(inv[k]>0) h+=`<button class="${placeMode===k?'active':''}" onclick="Game.setPlace('${k}')" title="${k}">${itemName(k)} ×${inv[k]}</button> `; }
+    for(const k in inv){
+      if(inv[k]<=0) continue;
+      const isUniq = !!UNIQUE_ITEMS[k];
+      const cls = [placeMode===k?'active':'', isUniq?'unique':''].filter(Boolean).join(' ');
+      h+=`<button class="${cls}" onclick="Game.setPlace('${k}')" title="${k}">${itemName(k)} ×${inv[k]}</button> `;
+    }
     h+=`<button class="${placeMode==='__move'?'active':''}" onclick="Game.setPlace('__move')">⟷ Move</button> `;
     h+=`<button class="${placeMode==='__remove'?'active':''}" onclick="Game.setPlace('__remove')">🗑 Remove</button> `;
     if(placeMode) h+=`<button onclick="Game.setPlace(null)">Done</button>`;
@@ -3346,6 +3360,7 @@ const Game=(()=>{
           const idx=Math.round(aim/(Math.PI/4))%8;
           lbl=arrows[idx];
         }
+        if(c && c.unique) cls+=' unique';
         if(sel && sel.x===x && sel.y===y) cls+=' sel';
         if(state.gunPopover && state.gunPopover.x===x && state.gunPopover.y===y) cls+=' swap';
         h+=`<div class="${cls}" onclick="Game.builderClick(event,${x},${y})">${lbl}</div>`;
