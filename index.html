@@ -1097,15 +1097,26 @@ const Game=(()=>{
     }
     return m;
   }
-  // Multiset of components needed to go from current layout to target (no refund for dropped parts).
-  function diffNeeded(current, target){
-    const cur=componentCount(current), tgt=componentCount(target);
-    const need={};
+  // Compute the parts you must still buy to switch layouts, given that stripping the
+  // current ship returns every non-core component to inventory (matching manual remove).
+  // Pool = current inventory + components in current layout. We draw target needs from
+  // the pool; only the shortfall is the "buy" list. Whatever's left stays in inventory.
+  function diffWithInventory(current, target, inventory){
+    const pool = {...(inventory||{})};
+    const cur = componentCount(current);
+    for(const k in cur) pool[k] = (pool[k]||0) + cur[k];
+    const tgt = componentCount(target);
+    const need = {};
     for(const k in tgt){
-      const delta = tgt[k] - (cur[k]||0);
-      if(delta > 0) need[k] = delta;
+      const n = tgt[k] - (pool[k]||0);
+      if(n > 0) need[k] = n;
     }
-    return need;
+    const leftover = {};
+    for(const k in pool){
+      const left = pool[k] - (tgt[k] || 0);
+      if(left > 0) leftover[k] = left;
+    }
+    return { need, leftover };
   }
   function diffMatCost(need){
     const total={iron:0,silicon:0,carbon:0,rare:0};
@@ -2800,10 +2811,10 @@ const Game=(()=>{
   function applyDesign(idx, how){
     const me=state.players[state.me.id]; if(!me) return;
     const d=state.shipLibrary[idx]; if(!d) return;
-    const need = diffNeeded(me.layout, d.layout);
+    const { need, leftover } = diffWithInventory(me.layout, d.layout, me.inventory);
     const isFree = Object.keys(need).length===0;
     if(isFree){
-      chatLine('* applied design #'+(idx+1)+' (free — same components)');
+      chatLine('* applied design #'+(idx+1)+' (free — drew parts from inventory)');
     } else if(how==='cr'){
       const credCost=diffCredCost(need);
       if((me.creds||0) < credCost){ chatLine('not enough credits ('+credCost+'cr)'); return; }
@@ -2815,6 +2826,8 @@ const Game=(()=>{
       for(const m in matCost) me.materials[m]=(me.materials[m]||0)-matCost[m];
       chatLine('* applied design #'+(idx+1));
     }
+    // Leftover non-core parts return to inventory, matching manual-remove behavior.
+    me.inventory = leftover;
     me.layout=cloneLayout(d.layout);
     const s=shipStats(me); me.maxHp=s.maxHp; me.shieldMax=s.shieldMax; me.boostMax=s.boostCap;
     me.hp=Math.min(me.maxHp,me.hp);
@@ -2892,7 +2905,7 @@ const Game=(()=>{
       const myHash=layoutHash(me.layout);
       for(let i=state.shipLibrary.length-1;i>=0;i--){
         const d=state.shipLibrary[i];
-        const need=diffNeeded(me.layout,d.layout);
+        const { need } = diffWithInventory(me.layout, d.layout, me.inventory);
         const isFree=Object.keys(need).length===0;
         const matNeed=diffMatCost(need);
         const credNeed=diffCredCost(need);
@@ -2906,7 +2919,7 @@ const Game=(()=>{
           : `<button ${(!afford||isCurrent)?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i},'mat')" style="padding:3px 8px;min-height:0;font-size:11px" title="Pay materials for missing parts">Apply (Mat)</button>
              <button ${(!affordCr||isCurrent)?'disabled style="opacity:.4"':''} onclick="Game.applyDesign(${i},'cr')" style="padding:3px 8px;min-height:0;font-size:11px" title="Pay credits for missing parts">Apply (${credNeed}cr)</button>`;
         const costLine = isFree
-          ? '<span style="color:#5f8">free — you already have the parts</span>'
+          ? '<span style="color:#5f8">free — parts come from your ship + inventory</span>'
           : `+${matStr} <span style="color:#789">or</span> +${credNeed}cr`;
         lib+=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:5px;border:1px solid ${isCurrent?'#fd6':'#234'};border-radius:4px;background:${isCurrent?'rgba(40,32,4,0.4)':'rgba(8,16,24,0.5)'}">
           ${miniLayoutHtml(d.layout)}
