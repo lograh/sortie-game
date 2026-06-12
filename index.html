@@ -2855,12 +2855,52 @@ const Game=(()=>{
         continue; // skip default AI for this bot
       }
       let bestD=Infinity, tx=0, ty=0, gotTarget=false, isShip=false, targetShip=null;
+      let soccerAttack=false;
       // race mode: aim for next checkpoint (advance progress just like player)
       if(state.gameMode==='race' && state.raceCheckpoints.length){
         advanceCheckpoint(bot);
         const cp=state.raceCheckpoints[(bot.checkpoint||0)%state.raceCheckpoints.length];
         tx=cp.x; ty=cp.y; gotTarget=true; isShip=false;
         const dx=tx-bot.x, dy=ty-bot.y; bestD=dx*dx+dy*dy;
+      } else if(state.gameMode==='soccer' && state.ball && state.goals.length){
+        // Soccer AI: position behind the ball relative to the nearest enemy goal, then
+        // close in and fire. When the ball is on top of our own goal, defend by getting
+        // between own-goal and ball so our shot pushes the ball away.
+        const ball = state.ball;
+        let enemyGoal = null, enemyBest = Infinity;
+        let ownGoal = null;
+        for(const goal of state.goals){
+          if(goal.team === bot.team){ ownGoal = goal; continue; }
+          const d2 = (ball.x-goal.x)*(ball.x-goal.x) + (ball.y-goal.y)*(ball.y-goal.y);
+          if(d2 < enemyBest){ enemyBest = d2; enemyGoal = goal; }
+        }
+        // Defend if the ball is closer to our goal than to any enemy goal.
+        const ownD2 = ownGoal ? (ball.x-ownGoal.x)*(ball.x-ownGoal.x) + (ball.y-ownGoal.y)*(ball.y-ownGoal.y) : Infinity;
+        const defendMode = ownGoal && ownD2 < enemyBest * 0.7;  // bias toward attack
+        const target = defendMode ? ownGoal : enemyGoal;
+        if(target){
+          // Shoot position: opposite side of ball from the goal we want to push toward,
+          // so a shot from us through the ball heads in the right direction.
+          // - attack: push toward enemy goal → stand opposite enemy goal (ball + (ball-enemy).norm * d)
+          // - defend: push away from own goal → stand between own goal and ball (ball + (own-ball).norm * d)
+          const gx = defendMode ? (ownGoal.x - ball.x) : (ball.x - enemyGoal.x);
+          const gy = defendMode ? (ownGoal.y - ball.y) : (ball.y - enemyGoal.y);
+          const gd = Math.hypot(gx, gy) || 1;
+          const shootX = ball.x + (gx/gd) * 220;
+          const shootY = ball.y + (gy/gd) * 220;
+          const distToShoot = Math.hypot(bot.x - shootX, bot.y - shootY);
+          var soccerInPosition = false;
+          if(distToShoot < 140){
+            // In firing position — pivot toward the ball and fire when aligned.
+            tx = ball.x; ty = ball.y;
+            soccerInPosition = true;
+          } else {
+            tx = shootX; ty = shootY;
+          }
+          gotTarget = true; isShip = false;
+          bestD = (tx-bot.x)*(tx-bot.x) + (ty-bot.y)*(ty-bot.y);
+          soccerAttack = true;
+        }
       } else {
         for(const pid in state.players){
           if(pid===aid) continue;
@@ -2898,7 +2938,8 @@ const Game=(()=>{
         const isCheckpoint = state.gameMode==='race' && !isShip;
         // Infected bots in infection mode want to ram — close to contact distance.
         const infectionRam = state.gameMode==='infection' && bot.infected && isShip;
-        const close = infectionRam ? 20 : (isShip ? 500 : (isCheckpoint ? 0 : 300));
+        // Soccer bot: close to firing range; the "behind-ball" target already accounts for stand-off.
+        const close = infectionRam ? 20 : (soccerAttack ? 30 : (isShip ? 500 : (isCheckpoint ? 0 : 300)));
         const inRace = state.gameMode==='race';
         // Race: full throttle and burn boost on aligned straightaways. Non-race keeps 0.7 patrol speed.
         const wantBoost = inRace && !danger && bot.boost>0 && bot.boostMax>0 && Math.abs(diff)<0.25;
@@ -2918,8 +2959,10 @@ const Game=(()=>{
         const suppressRacerFire = state.gameMode==='race' && !state.raceCombat && isShip && targetShip && !targetShip.pirate;
         // Infected bots are committing to ram — no point heating up the guns.
         const suppressInfectionFire = state.gameMode==='infection' && bot.infected;
+        // Soccer bots only fire once they've reached their shooting stand-off behind the ball.
+        const suppressSoccerOutOfPosition = state.gameMode==='soccer' && soccerAttack && !(typeof soccerInPosition !== 'undefined' && soccerInPosition);
         const aimedAndReady = !danger && Math.abs(diff)<0.18 && bot.fireCd<=0;
-        let fire = aimedAndReady && !targetingCheckpoint && !suppressRacerFire && !suppressInfectionFire;
+        let fire = aimedAndReady && !targetingCheckpoint && !suppressRacerFire && !suppressInfectionFire && !suppressSoccerOutOfPosition;
         // Combat race: bots stay on the racing line but opportunistically shoot any hostile
         // ship that drifts into their forward cone (they wouldn't otherwise — target is a checkpoint).
         if(!fire && aimedAndReady && state.gameMode==='race' && state.raceCombat){
