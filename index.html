@@ -141,6 +141,10 @@
     <h3>Round Over</h3>
     <div class="body" id="endBody"></div>
   </div>
+  <div id="changelogModal" class="panel" style="display:none;left:50%;top:50%;transform:translate(-50%,-50%);width:min(560px,92vw);max-height:80vh;z-index:10">
+    <h3>Recent changes <button onclick="Game.toggleChangelog()" style="float:right;font-size:11px;padding:3px 8px;min-height:0">Close</button></h3>
+    <div class="body" id="changelogBody" style="font-size:12px;line-height:1.55">Loading…</div>
+  </div>
 
   <div id="vote" class="panel"><span id="voteText"></span>
     <button class="good" onclick="Game.castVote(true)">Yes</button>
@@ -156,6 +160,16 @@
           <div class="row">Name <input id="pname" value="" style="background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px"></div>
           <div class="row">AI bots <input id="aicount" type="number" min="0" max="12" value="2" style="width:64px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px">
             <span class="dim">— added to the game when you start / connect</span></div>
+          <div class="row">AI teams <input id="aiTeamCount" type="number" min="0" max="5" value="0" style="width:64px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px">
+            <span class="dim">— 0 = all neutral, N = bots split across N teams</span></div>
+          <div class="row">World size
+            <select id="worldSize" style="background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px;font-family:inherit;font-size:13px">
+              <option value="6000">Tiny (6k)</option>
+              <option value="10000">Small (10k)</option>
+              <option value="16000" selected>Medium (16k)</option>
+              <option value="22000">Large (22k)</option>
+              <option value="32000">Huge (32k)</option>
+            </select></div>
           <div class="row">Round length (min) <input id="roundmin" type="number" min="0" max="60" value="10" style="width:64px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px">
             <span class="dim">— 0 = none</span></div>
           <div class="row">Kill goal <input id="killgoal" type="number" min="0" max="999" value="0" style="width:64px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px">
@@ -562,7 +576,7 @@ const Music=(()=>{
 /* ============================================================
    Game state
    ============================================================ */
-const WORLD=16000;
+let WORLD=16000;  // mutable: lobby lets the host pick a size; peers sync via start_game
 const MAP_CELL=400;
 const PLATFORM_DEFENSE=240;
 // Seeded mulberry32 PRNG — lets every peer reproduce the same world generation.
@@ -708,6 +722,12 @@ const Game=(()=>{
     return {maxHp,mass,engines,thrust,turn,guns,repair,scanner,radar,radarRange,shieldMax,boostCap,coolant,maxHeat,heatDecay,heatMult};
   }
 
+  // Deterministic 32-bit string hash — used to scatter players across hubs without coordination.
+  function hashStr(s){
+    let h=0;
+    for(let i=0;i<s.length;i++) h=((h<<5)-h+s.charCodeAt(i))|0;
+    return h>>>0;
+  }
   // Push a spawn point just outside any radioactive nebula it lands inside.
   // Used as a safety net — world-gen also tries to keep nebulae off platforms.
   function nudgeOutOfRadiation(x, y){
@@ -1044,10 +1064,13 @@ const Game=(()=>{
         document.getElementById('roundmin').value = m.mins ?? 10;
         document.getElementById('killgoal').value = m.goal ?? 0;
         document.getElementById('aicount').value = m.aicount ?? 0;
+        const atc=document.getElementById('aiTeamCount'); if(atc) atc.value = m.aiTeamCount ?? 0;
+        const ws=document.getElementById('worldSize'); if(ws && m.worldSize) ws.value = m.worldSize;
         const rc=document.getElementById('raceCombat'); if(rc) rc.checked = !!m.raceCombat;
         const rcp=document.getElementById('raceCheckpoints'); if(rcp) rcp.value = m.raceCheckpointsN || 6;
         const rl=document.getElementById('raceLaps'); if(rl) rl.value = m.raceLaps || 1;
       } catch(_){}
+      WORLD = m.worldSize || 16000;
       if(m.seed) genWorld((m.seed>>>0));
       startPlaying();
     } else if(m.kind==='peer_list'){
@@ -1307,8 +1330,12 @@ const Game=(()=>{
       p.x=pose.x; p.y=pose.y; p.vx=0; p.vy=0; p.rot=pose.rot;
       p.checkpoint=0; p.lap=0; p.raceTime=0;
     } else {
-      const hub=state.platforms[0];
-      if(hub){ p.x=hub.x; p.y=hub.y; p.vx=0; p.vy=0; }
+      // Hash-based hub pick so multiple humans don't all spawn at platforms[0].
+      const hubs=state.platforms;
+      if(hubs.length){
+        const hub=hubs[hashStr(state.me.id)%hubs.length];
+        p.x=hub.x; p.y=hub.y; p.vx=0; p.vy=0;
+      }
     }
     const safe = nudgeOutOfRadiation(p.x, p.y);
     p.x = safe.x; p.y = safe.y;
@@ -1746,9 +1773,10 @@ const Game=(()=>{
   }
   function spawnAIs(){
     const n=Math.max(0,Math.min(12,parseInt(document.getElementById('aicount').value)||0));
+    const teamCount=Math.max(0,Math.min(5,parseInt(document.getElementById('aiTeamCount')?.value)||0));
     for(let i=0;i<n;i++){
       const id='ai_'+rid();
-      const team=(i%5)+1; // round-robin across teams 1..5
+      const team = teamCount>0 ? (i%teamCount)+1 : 0;
       const bot=spawnPlayer(id,'Bot-'+(i+1),team);
       if(state.gameMode==='race' && state.raceCheckpoints.length>=2){
         const pose=raceStartPose(i+1, n+1);
@@ -3728,10 +3756,40 @@ const Game=(()=>{
   }
 
   /* -------- Lobby actions -------- */
+  // Changelog modal — fetches last few commits from the GitHub repo.
+  let _changelogLoaded = false;
+  async function toggleChangelog(){
+    const el = document.getElementById('changelogModal'); if(!el) return;
+    const showing = el.style.display==='none' || !el.style.display;
+    el.style.display = showing ? 'block' : 'none';
+    if(!showing) return;
+    if(_changelogLoaded) return;
+    const body = document.getElementById('changelogBody');
+    body.textContent = 'Loading…';
+    try {
+      const r = await fetch('https://api.github.com/repos/lograh/sortie-game/commits?per_page=8', {cache:'no-store'});
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      const commits = await r.json();
+      if(!commits.length){ body.textContent = 'No commits found.'; return; }
+      body.innerHTML = commits.map(c => {
+        const msg = (c.commit?.message||'').split('\n')[0];
+        const sha = (c.sha||'').slice(0,7);
+        const date = c.commit?.author?.date ? new Date(c.commit.author.date).toLocaleDateString() : '';
+        const url = c.html_url||'#';
+        return `<div style="margin-bottom:8px"><a href="${url}" target="_blank" rel="noopener" style="color:#9cf;font-family:Consolas,monospace">${esc(sha)}</a> <span class="dim" style="font-size:10px">${esc(date)}</span><br><span>${esc(msg)}</span></div>`;
+      }).join('');
+      _changelogLoaded = true;
+    } catch(err) {
+      body.innerHTML = 'Could not fetch changelog: '+esc(err.message||String(err))+'.<br><span class="dim">(GitHub API may be rate-limited or offline.)</span>';
+    }
+  }
+
   function startSolo(){
     state.me.name=document.getElementById('pname').value||'Solo';
     try{ localStorage.setItem('sortie_name_v1', state.me.name); }catch(_){}
     // Have any peers join us with the same settings & world.
+    // Apply lobby-chosen world size before any genWorld runs.
+    WORLD = parseInt(document.getElementById('worldSize')?.value)||16000;
     const havePeers = Object.keys(Net.peers||{}).length>0;
     if(havePeers){
       const seed = state.worldSeed || ((Math.random()*0x7fffffff)>>>0);
@@ -3743,6 +3801,8 @@ const Game=(()=>{
           mins: parseInt(document.getElementById('roundmin').value)||0,
           goal: parseInt(document.getElementById('killgoal').value)||0,
           aicount: parseInt(document.getElementById('aicount').value)||0,
+          aiTeamCount: parseInt(document.getElementById('aiTeamCount').value)||0,
+          worldSize: WORLD,
           raceCombat: !!(document.getElementById('raceCombat')?.checked),
           raceCheckpointsN: parseInt(document.getElementById('raceCheckpoints')?.value)||6,
           raceLaps: parseInt(document.getElementById('raceLaps')?.value)||1,
@@ -4101,8 +4161,37 @@ const Game=(()=>{
   // Build version — uses Last-Modified from GitHub Pages, so it auto-bumps each push.
   try {
     const bv=document.getElementById('buildVersion');
-    if(bv) bv.textContent='build '+document.lastModified;
+    if(bv){
+      bv.textContent='build '+document.lastModified;
+      bv.style.cursor='pointer';
+      bv.style.textDecoration='underline';
+      bv.title='Click for recent changes';
+      bv.addEventListener('click', toggleChangelog);
+    }
   } catch(_){}
+  // Dynamic team list: show how many bots will be in each team given current inputs.
+  function refreshTeamList(){
+    const sel=document.getElementById('myteam'); if(!sel) return;
+    const cur=sel.value;
+    const aicount=Math.max(0,Math.min(12,parseInt(document.getElementById('aicount')?.value)||0));
+    const teamCount=Math.max(0,Math.min(5,parseInt(document.getElementById('aiTeamCount')?.value)||0));
+    const per=[0,0,0,0,0,0];
+    for(let i=0;i<aicount;i++){
+      const t = teamCount>0 ? (i%teamCount)+1 : 0;
+      per[t]++;
+    }
+    const labels=['neutral (free-for-all)','green','red','blue','magenta','orange'];
+    let html='';
+    for(let t=0;t<=5;t++){
+      const tag = per[t]>0 ? ' ('+per[t]+' bot'+(per[t]>1?'s':'')+')' : '';
+      html += `<option value="${t}">${t} — ${labels[t]}${tag}</option>`;
+    }
+    sel.innerHTML=html;
+    sel.value=cur;
+  }
+  document.getElementById('aicount')?.addEventListener('input', refreshTeamList);
+  document.getElementById('aiTeamCount')?.addEventListener('input', refreshTeamList);
+  refreshTeamList();
   // initial lobby UI render (library + pre-build ship)
   renderLobbyLibrary();
   renderLobbyBuilder();
@@ -4222,7 +4311,7 @@ const Game=(()=>{
   boostEl.addEventListener('pointercancel',()=>{ state.boostHeld=false; boostEl.classList.remove('on'); });
 
   return {
-    startSolo,makeOffer,acceptOffer,acceptAnswer,sdpCopy,sdpPaste,sdpShare,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,
+    startSolo,makeOffer,acceptOffer,acceptAnswer,sdpCopy,sdpPaste,sdpShare,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,
     castVote,sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
     lobbySetPlace,lobbyBuilderClick,lobbyGunCfg,lobbySaveDesign,lobbyResetDesign,lobbyLoadDesign,
   };
