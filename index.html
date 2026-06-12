@@ -26,13 +26,21 @@
   button.active{background:#046;border-color:#7df}
   #lobby{left:50%;top:50%;transform:translate(-50%,-50%);width:min(1200px,96vw);max-height:96vh;overflow:auto}
   #lobby .body{max-height:none}
-  #lobbyGrid{display:flex;gap:14px;flex-wrap:wrap}
-  #lobbyGrid > div{flex:1 1 300px;min-width:280px}
+  #lobbyGrid{display:grid;gap:14px;grid-template-columns:minmax(280px,1fr) minmax(260px,1fr) minmax(260px,1fr);grid-template-areas:"controls library builder" "controls multiplayer multiplayer"}
+  @media (max-width: 900px){
+    #lobbyGrid{grid-template-columns:1fr;grid-template-areas:"controls" "library" "builder" "multiplayer"}
+  }
+  #lobbyControls{grid-area:controls}
+  #lobbyLibrary{grid-area:library}
+  #lobbyBuilder{grid-area:builder}
+  #lobbyMP{grid-area:multiplayer}
+  #lobbyGrid > div{min-width:0}
   #lobbyGrid h4{margin:0 0 8px 0;color:#fd6;font-size:13px;border-bottom:1px solid #234;padding-bottom:4px}
-  #lobbyLibraryBody{max-height:260px;overflow:auto;padding-right:4px}
+  #lobbyLibraryBody{max-height:340px;overflow:auto;padding-right:4px}
   #lobbyPlayers{font-size:12px;line-height:1.6;margin-bottom:6px}
   #lobbyPlayers .you{color:#9df;font-weight:bold}
-  #lobbyChatLog{font-size:12px;height:150px;overflow:auto;background:rgba(0,0,0,0.3);border:1px solid #234;padding:6px;border-radius:4px;margin-bottom:6px}
+  #lobbyChatLog{font-size:12px;flex:1;min-height:200px;max-height:50vh;overflow:auto;background:rgba(0,0,0,0.3);border:1px solid #234;padding:6px;border-radius:4px;margin-bottom:6px}
+  #lobbyMP{display:flex;flex-direction:column}
   #lobbyChatLog div{margin-bottom:2px;word-wrap:break-word}
   #lobbyChatLog .sys{color:#888;font-style:italic}
   #lobbyChatInput{width:100%;background:#012;color:#cfe;border:1px solid #2af;padding:6px;font-size:12px;box-sizing:border-box;border-radius:3px;font-family:inherit}
@@ -207,8 +215,8 @@
             <button onclick="Game.startSolo()">Start Game</button>
           </div>
           <hr>
-          <div class="row dim">LAN / Internet — WebRTC handshake. Host taps Create Offer (link auto-copies); send the link to your friend. Friend opens the link, taps Accept Pasted Offer, copies the resulting <code>sortie-answer:</code> string back to host. Host taps Receive Answer and pastes. Tip on iOS: never tap your own answer link or you'll reload your offer tab — the new string format prevents that on purpose.</div>
-          <div class="row"><button onclick="Game.makeOffer()">Create Offer</button> <button onclick="Game.acceptOffer()">Accept Pasted Offer</button> <button onclick="Game.openAnswerModal()">Receive Answer</button></div>
+          <div class="row dim">LAN / Internet — WebRTC handshake. Host taps Create Offer (link auto-copies); send the link to your friend. When the friend opens the link the offer is accepted automatically — they get a <code>sortie-answer:</code> string. They send that back to the host, who taps Receive Answer and pastes. Never tap your own answer link — the new format prevents accidental link-taps from reloading your offer tab.</div>
+          <div class="row"><button onclick="Game.makeOffer()">Create Offer</button> <button onclick="Game.openAnswerModal()">Receive Answer</button></div>
           <div class="row"><button onclick="Game.sdpCopy()">Copy</button> <button onclick="Game.sdpPaste()">Paste</button> <button onclick="Game.sdpShare()">Share Link</button></div>
           <textarea id="sdp" rows="3" placeholder="Paste offer/answer link or SDP here"></textarea>
           <div id="sdpLink" class="row dim" style="font-size:11px;word-break:break-all;display:none"></div>
@@ -218,14 +226,16 @@
         <div id="lobbyLibrary">
           <h4>Design Library</h4>
           <div id="lobbyLibraryBody"></div>
-          <h4 style="margin-top:14px">Multiplayer</h4>
-          <div id="lobbyPlayers"></div>
-          <div id="lobbyChatLog"></div>
-          <input id="lobbyChatInput" type="text" placeholder="Lobby chat — Enter to send" autocomplete="off">
         </div>
         <div id="lobbyBuilder">
           <h4>Pre-build Ship <span class="dim" style="font-size:11px;font-weight:normal">(creative mode, no cost)</span></h4>
           <div id="lobbyBuilderBody"></div>
+        </div>
+        <div id="lobbyMP">
+          <h4>Multiplayer</h4>
+          <div id="lobbyPlayers"></div>
+          <div id="lobbyChatLog"></div>
+          <input id="lobbyChatInput" type="text" placeholder="Lobby chat — Enter to send" autocomplete="off">
         </div>
       </div>
     </div>
@@ -4154,7 +4164,7 @@ const Game=(()=>{
     await sdpCopy();
   }
 
-  // If the page was opened via a share link, prefill the textarea and prompt the user.
+  // If the page was opened via a share link, prefill and (for offers) auto-accept.
   async function consumeInboundHash(){
     const h = location.hash || '';
     const m = h.match(/^#?(offer|answer)=([A-Za-z0-9_\-]+)/);
@@ -4162,13 +4172,14 @@ const Game=(()=>{
     const j = await unpackSdp(m[2]);
     if(!j) return;
     const ta = document.getElementById('sdp'); if(ta) ta.value = j;
-    const status = document.getElementById('lobbyStatus');
-    if(status){
-      status.textContent = m[1]==='offer'
-        ? 'Offer received from friend. Tap "Accept Pasted Offer" to join.'
-        : 'Answer received. Tap "Accept Pasted Answer" to finish connecting.';
-    }
     history.replaceState(null, '', location.pathname);
+    if(m[1]==='offer'){
+      setLobbyStatus('Offer received — accepting automatically...');
+      try { await acceptOffer(); } catch(_) { setLobbyStatus('Could not auto-accept the offer; check your connection and try again.'); }
+    } else {
+      // Legacy: an answer URL. New flow uses the Receive Answer modal — point the user there.
+      setLobbyStatus('Answer received. Tap Receive Answer to finish connecting.');
+    }
   }
   consumeInboundHash();
   function setupDC(pc,dc){
