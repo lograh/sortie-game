@@ -393,6 +393,10 @@
       <span id="setBrightVal" style="min-width:36px;text-align:right">1.00</span>
     </div>
     <div class="row"><label><input type="checkbox" id="setBgStars"> Background stars</label></div>
+    <div class="row">Zoom
+      <input type="range" id="setZoom" min="0.4" max="1.5" step="0.05" style="flex:1">
+      <span id="setZoomVal" style="min-width:36px;text-align:right">1.00×</span>
+    </div>
     <h4 style="color:var(--ui-text-highlight);margin:14px 0 6px 0;border-bottom:1px solid var(--ui-divider);padding-bottom:4px">Audio</h4>
     <div class="row">Master
       <input type="range" id="setVolMaster" min="0" max="1" step="0.05" style="flex:1">
@@ -1068,7 +1072,7 @@ const Game=(()=>{
   const Settings = {
     KEY: 'sortie_settings_v1',
     data: {
-      video: { colorblind:'off', brightness:1.0, bgStars:true },
+      video: { colorblind:'off', brightness:1.0, bgStars:true, zoom:1.0 },
       audio: { master:1.0, music:1.0, sfx:1.0 },
       bindings: {
         thrust: ['KeyW','ArrowUp'],
@@ -3166,7 +3170,7 @@ const Game=(()=>{
   function buildScene(){
     const me=state.players[state.me.id];
     const cx=me?me.x:0, cy=me?me.y:0;
-    Renderer.setCam(cx,cy,1);
+    Renderer.setCam(cx,cy, Settings.data.video.zoom || 1);
 
     // Stars are optional now — Settings can turn them off.
     const drawStars = Settings.data.video.bgStars !== false;
@@ -4133,19 +4137,33 @@ const Game=(()=>{
     fxCtx.clearRect(0,0,w,h);
     const dpr=Math.min(window.devicePixelRatio||1,2);
     const cx=w/2, cy=h/2;
+    // World-space drawing is wrapped by withZoom() so positions and world-radii scale
+    // around the camera center, just like the WebGL renderer's uZoom. Screen-space
+    // overlays (countdowns, off-screen arrows, hit arcs, the inside-nebula vignette)
+    // are drawn outside the wrap so they keep their fixed pixel sizes.
+    const zoom = Settings.data.video.zoom || 1;
+    function withZoom(fn){
+      fxCtx.save();
+      fxCtx.translate(cx, cy);
+      fxCtx.scale(zoom, zoom);
+      fxCtx.translate(-cx, -cy);
+      try { fn(); } finally { fxCtx.restore(); }
+    }
 
     // particles (world space -> screen space)
     if(me){
-      for(const p of state.particles){
-        const sx=cx+(p.x-me.x)*dpr;
-        const sy=cy-(p.y-me.y)*dpr;
-        if(sx<-20||sy<-20||sx>w+20||sy>h+20) continue;
-        const a=Math.min(1, p.life/40);
-        fxCtx.fillStyle=`rgba(${p.r},${p.g},${p.b},${a})`;
-        fxCtx.beginPath();
-        fxCtx.arc(sx,sy, p.size*dpr, 0, Math.PI*2);
-        fxCtx.fill();
-      }
+      withZoom(()=>{
+        for(const p of state.particles){
+          const sx=cx+(p.x-me.x)*dpr;
+          const sy=cy-(p.y-me.y)*dpr;
+          if(sx<-20||sy<-20||sx>w+20||sy>h+20) continue;
+          const a=Math.min(1, p.life/40);
+          fxCtx.fillStyle=`rgba(${p.r},${p.g},${p.b},${a})`;
+          fxCtx.beginPath();
+          fxCtx.arc(sx,sy, p.size*dpr, 0, Math.PI*2);
+          fxCtx.fill();
+        }
+      });
     }
 
     // nebula fog
@@ -4155,28 +4173,30 @@ const Game=(()=>{
       // Distant nebula clouds — only drawn when player is OUTSIDE a nebula.
       // Denser outer edge so the visible boundary matches the trigger circle.
       if(!insideAny){
-        for(const n of state.nebulae){
-          const dx=n.x-me.x, dy=n.y-me.y;
-          const rOnScreen=n.r*dpr;
-          if(Math.hypot(dx,dy) - n.r > w/2/dpr+200) continue;
-          const sx=cx+dx*dpr, sy=cy-dy*dpr;
-          const t=tn+n.seed;
-          const colInner = n.radioactive?'rgba(140,200,110,0.12)':'rgba(170,170,185,0.10)';
-          const colMid   = n.radioactive?'rgba(100,180,90,0.34)':'rgba(135,135,160,0.30)';
-          const colEdge  = n.radioactive?'rgba(70,140,60,0.60)':'rgba(95,95,120,0.55)';
-          for(let i=0;i<5;i++){
-            const ax=Math.cos(t*1.2+i*1.3)*30*dpr;
-            const ay=Math.sin(t*0.9+i*1.7)*30*dpr;
-            const rad=rOnScreen-i*30*dpr;
-            if(rad<20) continue;
-            const grd=fxCtx.createRadialGradient(sx+ax,sy+ay,0,sx+ax,sy+ay,rad);
-            grd.addColorStop(0,colInner);
-            grd.addColorStop(0.7,colMid);
-            grd.addColorStop(1,colEdge);
-            fxCtx.fillStyle=grd;
-            fxCtx.beginPath(); fxCtx.arc(sx+ax,sy+ay,rad,0,Math.PI*2); fxCtx.fill();
+        withZoom(()=>{
+          for(const n of state.nebulae){
+            const dx=n.x-me.x, dy=n.y-me.y;
+            const rOnScreen=n.r*dpr;
+            if(Math.hypot(dx,dy) - n.r > w/2/dpr+200) continue;
+            const sx=cx+dx*dpr, sy=cy-dy*dpr;
+            const t=tn+n.seed;
+            const colInner = n.radioactive?'rgba(140,200,110,0.12)':'rgba(170,170,185,0.10)';
+            const colMid   = n.radioactive?'rgba(100,180,90,0.34)':'rgba(135,135,160,0.30)';
+            const colEdge  = n.radioactive?'rgba(70,140,60,0.60)':'rgba(95,95,120,0.55)';
+            for(let i=0;i<5;i++){
+              const ax=Math.cos(t*1.2+i*1.3)*30*dpr;
+              const ay=Math.sin(t*0.9+i*1.7)*30*dpr;
+              const rad=rOnScreen-i*30*dpr;
+              if(rad<20) continue;
+              const grd=fxCtx.createRadialGradient(sx+ax,sy+ay,0,sx+ax,sy+ay,rad);
+              grd.addColorStop(0,colInner);
+              grd.addColorStop(0.7,colMid);
+              grd.addColorStop(1,colEdge);
+              fxCtx.fillStyle=grd;
+              fxCtx.beginPath(); fxCtx.arc(sx+ax,sy+ay,rad,0,Math.PI*2); fxCtx.fill();
+            }
           }
-        }
+        });
       }
       // Inside a nebula: dense screen fog with a truly cut-out clear bubble around player.
       if(insideAny){
@@ -4241,15 +4261,17 @@ const Game=(()=>{
       const rPx=cp.r*dpr;
       const onScreen = sx>-rPx && sy>-rPx && sx<w+rPx && sy<h+rPx;
       if(onScreen){
-        const pulse=0.7+0.3*Math.sin(performance.now()*0.006);
-        // outer glow
-        fxCtx.strokeStyle=`rgba(120,255,180,${0.35*pulse})`;
-        fxCtx.lineWidth=8*dpr;
-        fxCtx.beginPath(); fxCtx.arc(sx,sy,rPx,0,Math.PI*2); fxCtx.stroke();
-        // crisp ring
-        fxCtx.strokeStyle=`rgba(180,255,210,${0.85*pulse})`;
-        fxCtx.lineWidth=3*dpr;
-        fxCtx.beginPath(); fxCtx.arc(sx,sy,rPx,0,Math.PI*2); fxCtx.stroke();
+        withZoom(()=>{
+          const pulse=0.7+0.3*Math.sin(performance.now()*0.006);
+          // outer glow
+          fxCtx.strokeStyle=`rgba(120,255,180,${0.35*pulse})`;
+          fxCtx.lineWidth=8*dpr;
+          fxCtx.beginPath(); fxCtx.arc(sx,sy,rPx,0,Math.PI*2); fxCtx.stroke();
+          // crisp ring
+          fxCtx.strokeStyle=`rgba(180,255,210,${0.85*pulse})`;
+          fxCtx.lineWidth=3*dpr;
+          fxCtx.beginPath(); fxCtx.arc(sx,sy,rPx,0,Math.PI*2); fxCtx.stroke();
+        });
       } else {
         // screen-edge arrow pointing toward checkpoint
         const dx=cp.x-me.x, dy=cp.y-me.y;
@@ -4285,13 +4307,15 @@ const Game=(()=>{
       const rPx = 80*dpr;
       const onScreen = sx>-rPx && sy>-rPx && sx<w+rPx && sy<h+rPx;
       if(onScreen){
-        const pulse=0.7+0.3*Math.sin(performance.now()*0.006);
-        fxCtx.strokeStyle=`rgba(255,220,100,${0.4*pulse})`;
-        fxCtx.lineWidth=8*dpr;
-        fxCtx.beginPath(); fxCtx.arc(sx,sy,rPx,0,Math.PI*2); fxCtx.stroke();
-        fxCtx.strokeStyle=`rgba(255,235,150,${0.9*pulse})`;
-        fxCtx.lineWidth=3*dpr;
-        fxCtx.beginPath(); fxCtx.arc(sx,sy,rPx,0,Math.PI*2); fxCtx.stroke();
+        withZoom(()=>{
+          const pulse=0.7+0.3*Math.sin(performance.now()*0.006);
+          fxCtx.strokeStyle=`rgba(255,220,100,${0.4*pulse})`;
+          fxCtx.lineWidth=8*dpr;
+          fxCtx.beginPath(); fxCtx.arc(sx,sy,rPx,0,Math.PI*2); fxCtx.stroke();
+          fxCtx.strokeStyle=`rgba(255,235,150,${0.9*pulse})`;
+          fxCtx.lineWidth=3*dpr;
+          fxCtx.beginPath(); fxCtx.arc(sx,sy,rPx,0,Math.PI*2); fxCtx.stroke();
+        });
       } else {
         const dx2=wp.x-me.x, dy2=wp.y-me.y;
         const ang=Math.atan2(-dy2, dx2);
@@ -4314,57 +4338,60 @@ const Game=(()=>{
 
     // heat arc indicator below each alive ship: dot→half-circle, green→yellow→red, blinks while overheated
     if(me){
-      for(const id in state.players){
-        const p=state.players[id];
-        if(!p.alive) continue;
-        const heat=p.heat||0;
-        if(heat<=0 && !p.overheated) continue;
-        const sx=cx+(p.x-me.x)*dpr;
-        const sy=cy-(p.y-me.y)*dpr;
-        if(sx<-60||sy<-60||sx>w+60||sy>h+60) continue;
-        const ratio=Math.min(1, heat/(p._maxHeat||100));
-        const radius=(4+ratio*18)*dpr;
-        const arcSpan=Math.max(0.18, ratio*Math.PI);
-        let r,g,b;
-        if(ratio<0.5){ // green → yellow
-          r=Math.floor(40+ratio*2*215); g=220; b=60;
-        } else {       // yellow → red
-          r=255; g=Math.floor(220-(ratio-0.5)*2*200); b=Math.max(20, 60-(ratio-0.5)*2*40);
+      withZoom(()=>{
+        for(const id in state.players){
+          const p=state.players[id];
+          if(!p.alive) continue;
+          const heat=p.heat||0;
+          if(heat<=0 && !p.overheated) continue;
+          const sx=cx+(p.x-me.x)*dpr;
+          const sy=cy-(p.y-me.y)*dpr;
+          if(sx<-60||sy<-60||sx>w+60||sy>h+60) continue;
+          const ratio=Math.min(1, heat/(p._maxHeat||100));
+          const radius=(4+ratio*18)*dpr;
+          const arcSpan=Math.max(0.18, ratio*Math.PI);
+          let r,g,b;
+          if(ratio<0.5){ // green → yellow
+            r=Math.floor(40+ratio*2*215); g=220; b=60;
+          } else {       // yellow → red
+            r=255; g=Math.floor(220-(ratio-0.5)*2*200); b=Math.max(20, 60-(ratio-0.5)*2*40);
+          }
+          let alpha=1;
+          if(p.overheated){
+            alpha=0.35+0.55*(0.5+0.5*Math.sin(performance.now()*0.025));
+          }
+          fxCtx.strokeStyle=`rgba(${r},${g},${b},${alpha})`;
+          fxCtx.lineWidth=4*dpr;
+          fxCtx.lineCap='round';
+          fxCtx.beginPath();
+          fxCtx.arc(sx, sy+24*dpr, radius, Math.PI/2-arcSpan/2, Math.PI/2+arcSpan/2);
+          fxCtx.stroke();
         }
-        let alpha=1;
-        if(p.overheated){
-          // pulse alpha 0.35..1.0 while overheated
-          alpha=0.35+0.55*(0.5+0.5*Math.sin(performance.now()*0.025));
-        }
-        fxCtx.strokeStyle=`rgba(${r},${g},${b},${alpha})`;
-        fxCtx.lineWidth=4*dpr;
-        fxCtx.lineCap='round';
-        fxCtx.beginPath();
-        fxCtx.arc(sx, sy+24*dpr, radius, Math.PI/2-arcSpan/2, Math.PI/2+arcSpan/2);
-        fxCtx.stroke();
-      }
+      });
     }
 
     // fuzzy HP segments above other ships
     if(me){
-      const segW=7*dpr, segH=4*dpr, gap=1*dpr;
-      const totalW=segW*4+gap*3;
-      for(const id in state.players){
-        if(id===state.me.id) continue;
-        const p=state.players[id];
-        if(!p.alive||!p.maxHp) continue;
-        const sx=cx+(p.x-me.x)*dpr;
-        const sy=cy-(p.y-me.y)*dpr;
-        if(sx<-40||sy<-40||sx>w+40||sy>h+40) continue;
-        const ratio=p.hp/p.maxHp;
-        const lit=ratio>0.75?4:ratio>0.5?3:ratio>0.25?2:1;
-        const color=lit===4?'#5f8':lit===3?'#fd6':lit===2?'#f93':'#f33';
-        const bx=sx-totalW/2, by=sy-28*dpr;
-        for(let i=0;i<4;i++){
-          fxCtx.fillStyle=i<lit?color:'rgba(40,50,60,0.55)';
-          fxCtx.fillRect(bx+i*(segW+gap), by, segW, segH);
+      withZoom(()=>{
+        const segW=7*dpr, segH=4*dpr, gap=1*dpr;
+        const totalW=segW*4+gap*3;
+        for(const id in state.players){
+          if(id===state.me.id) continue;
+          const p=state.players[id];
+          if(!p.alive||!p.maxHp) continue;
+          const sx=cx+(p.x-me.x)*dpr;
+          const sy=cy-(p.y-me.y)*dpr;
+          if(sx<-40||sy<-40||sx>w+40||sy>h+40) continue;
+          const ratio=p.hp/p.maxHp;
+          const lit=ratio>0.75?4:ratio>0.5?3:ratio>0.25?2:1;
+          const color=lit===4?'#5f8':lit===3?'#fd6':lit===2?'#f93':'#f33';
+          const bx=sx-totalW/2, by=sy-28*dpr;
+          for(let i=0;i<4;i++){
+            fxCtx.fillStyle=i<lit?color:'rgba(40,50,60,0.55)';
+            fxCtx.fillRect(bx+i*(segW+gap), by, segW, segH);
+          }
         }
-      }
+      });
     }
 
     // hit arcs (screen-edge)
@@ -4772,6 +4799,8 @@ const Game=(()=>{
     document.getElementById('setBright').value = Settings.data.video.brightness;
     document.getElementById('setBrightVal').textContent = Number(Settings.data.video.brightness).toFixed(2);
     document.getElementById('setBgStars').checked = Settings.data.video.bgStars;
+    document.getElementById('setZoom').value = Settings.data.video.zoom || 1;
+    document.getElementById('setZoomVal').textContent = Number(Settings.data.video.zoom||1).toFixed(2)+'×';
     document.getElementById('setVolMaster').value = Settings.data.audio.master;
     document.getElementById('setVolMusic').value  = Settings.data.audio.music;
     document.getElementById('setVolSfx').value    = Settings.data.audio.sfx;
@@ -4816,6 +4845,12 @@ const Game=(()=>{
       Settings.applyVideo(); Settings.save();
     });
     $('setBgStars')?.addEventListener('change', e => { Settings.data.video.bgStars = e.target.checked; Settings.applyVideo(); Settings.save(); });
+    $('setZoom')?.addEventListener('input', e => {
+      const v = parseFloat(e.target.value);
+      Settings.data.video.zoom = v;
+      $('setZoomVal').textContent = v.toFixed(2)+'×';
+      Settings.save();   // rendering reads the setting live each frame; nothing else to apply.
+    });
     $('setVolMaster')?.addEventListener('input', e => {
       const v = parseFloat(e.target.value); Settings.data.audio.master = v;
       $('setVolMasterVal').textContent = Math.round(v*100)+'%';
