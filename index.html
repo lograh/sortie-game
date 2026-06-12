@@ -4613,13 +4613,71 @@ const Game=(()=>{
         return !bot || !bot.alive;
       },
     },
+    { id:'dock',
+      text: () => 'Fly to the orange hub and dock.',
+      hint: () => 'Hubs let you trade, repair, and modify your ship. Get close, then tap the Dock button (or press ['+bindingLabel('dock')+']).',
+      setup: () => {
+        // Aim the waypoint at the nearest platform; the on-screen ring will guide them.
+        const me = state.players[state.me.id]; if(!me || !state.platforms.length) return;
+        let nearest = null, bestD = Infinity;
+        for(const pl of state.platforms){
+          const d = Math.hypot(me.x-pl.x, me.y-pl.y);
+          if(d < bestD){ bestD = d; nearest = pl; }
+        }
+        if(nearest) state.tutorial.waypoint = {x: nearest.x, y: nearest.y};
+      },
+      check: () => state.docked === true,
+    },
+    { id:'build_hull',
+      text: () => 'Add a Hull cell to your ship.',
+      hint: () => 'In the right-side builder, tap Hull, then tap an empty grey square next to your ship. Hull is the foundation — modules can only mount on hull cells.',
+      init: () => {
+        const me = state.players[state.me.id];
+        state.tutorial._startHullCount = countLayoutCells(me?.layout, c => c.type==='hull');
+      },
+      check: () => {
+        const me = state.players[state.me.id]; if(!me) return false;
+        return countLayoutCells(me.layout, c => c.type==='hull') > (state.tutorial._startHullCount||0);
+      },
+    },
+    { id:'build_module',
+      text: () => 'Mount a module on a hull cell.',
+      hint: () => 'Tap a module type (Engine, Armor, Repair…) then tap a hull cell to install it. Each module spends materials from your inventory.',
+      init: () => {
+        const me = state.players[state.me.id];
+        state.tutorial._startModuleCount = countLayoutCells(me?.layout, c => c.type!=='hull' && c.type!=='core');
+      },
+      check: () => {
+        const me = state.players[state.me.id]; if(!me) return false;
+        return countLayoutCells(me.layout, c => c.type!=='hull' && c.type!=='core') > (state.tutorial._startModuleCount||0);
+      },
+    },
+    { id:'library',
+      text: () => 'Tip: the Design Library is your quick-swap.',
+      hint: () => 'Your ship auto-saves when you undock. Saved designs show a one-tap Apply that costs only the missing parts — perfect for a fast loadout swap mid-match.',
+      init: () => { state.tutorial._endAt = state.tick + 60*7; },
+      check: () => state.tick >= (state.tutorial._endAt||0),
+    },
     { id:'done',
       text: () => 'Tutorial complete! 🎉',
       hint: () => 'You\'re ready. Returning to the lobby in a few seconds — or hit Quit Tutorial below.',
-      init: () => { state.tutorial._endAt = state.tick + 60*5; },
+      init: () => { state.tutorial._endAt = state.tick + 60*4; },
       check: () => state.tick >= (state.tutorial._endAt||0),
     },
   ];
+
+  // Used by the build_* steps to detect layout changes.
+  function countLayoutCells(layout, predicate){
+    if(!layout) return 0;
+    let n = 0;
+    for(let y=0;y<9;y++){
+      for(let x=0;x<9;x++){
+        const c = layout[y][x];
+        if(c && predicate(c)) n++;
+      }
+    }
+    return n;
+  }
 
   function startTutorial(){
     state.me.name = document.getElementById('pname').value || 'Pilot';
@@ -4643,7 +4701,8 @@ const Game=(()=>{
     const p = spawnPlayer(state.me.id, state.me.name, 0);
     p.x=0; p.y=0; p.vx=0; p.vy=0; p.rot=0;
     p.spawnX=0; p.spawnY=0; p.grace=180;
-    p.materials = {iron:0,silicon:0,carbon:0,rare:0};
+    // Tutorial starts with a small pool so the build steps don't stall on insufficient materials.
+    p.materials = {iron:20, silicon:8, carbon:3, rare:1};
     state.players[state.me.id] = p;
     // UI transitions
     document.body.classList.remove('mode-lobby');
