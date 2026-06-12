@@ -313,6 +313,7 @@
               <option value="deathmatch">Deathmatch (kills + timer)</option>
               <option value="race">Race (checkpoints)</option>
               <option value="infection">Infection (tag — last clean wins)</option>
+              <option value="soccer">Soccer (teams shoot ball into goals)</option>
             </select></div>
           <div class="row" id="raceOptsRow" style="display:none">Race opts
             <label class="dim">checkpoints <input id="raceCheckpoints" type="number" min="3" max="12" value="6" style="width:48px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px"></label>
@@ -1855,6 +1856,17 @@ const Game=(()=>{
       alert('Set at least one round end condition: round length or kill goal.');
       return;
     }
+    if(gameMode==='soccer'){
+      const myTeam = parseInt(document.getElementById('myteam').value)||0;
+      const aiTeamCount = parseInt(document.getElementById('aiTeamCount')?.value)||0;
+      if(myTeam===0){ alert('Soccer needs teams — pick a team (not neutral).'); return; }
+      // For solo or peer-host: bots must be on different teams (AI teams ≥ 1, plus our pick)
+      // gives ≥2 distinct teams. Multi-human soccer requires teams come from peer picks too.
+      if(aiTeamCount===0 && Object.keys(state.lobbyPeers||{}).length===0){
+        alert('Soccer needs at least 2 teams. Set AI teams ≥ 1 or join with friends on different teams.');
+        return;
+      }
+    }
     state.gameMode=gameMode;
     if(gameMode==='race'){
       state.raceCombat=document.getElementById('raceCombat').checked;
@@ -1895,6 +1907,9 @@ const Game=(()=>{
     state.roundEnded=false;
     state.raceFirstFinishTick=0;
     state.raceFinishOrder=[];
+    // Soccer mode: stand up the ball + goals immediately.
+    state.ball = null; state.goals = []; state.teamScores = {};
+    if(state.gameMode==='soccer') initSoccer();
     // Infection mode: schedule the patient-zero pick once everyone's spawned in.
     // We can't pick at this exact moment because peer entries are populated by their state
     // broadcasts (which arrive after the dc opens). Wait ~3s then deterministically pick.
@@ -2475,6 +2490,145 @@ const Game=(()=>{
     // below 20 = dust, not tracked (already not respawned)
   }
 
+  /* -------- Soccer mode -------- */
+  // Ball is a physics object: pushed by bullets and ship rams, bounces off asteroids,
+  // pulled by gravity wells. When it crosses into a goal, the last-touching team scores
+  // (or, for own-goal cases, every OTHER team scores).
+  const BALL_RADIUS = 30;
+  const BALL_FRICTION = 0.998;     // space-ish: very gentle decay
+  const BALL_MAX_SPEED = 22;
+  const GOAL_RADIUS = 380;
+
+  function soccerActiveTeams(){
+    const set = new Set();
+    for(const id in state.players){
+      const p = state.players[id];
+      if(!p || p.pirate || p.trader) continue;
+      if(p.team >= 1 && p.team <= 5) set.add(p.team);
+    }
+    return [...set].sort((a,b)=>a-b);
+  }
+  function initSoccer(){
+    state.ball = { x:0, y:0, vx:0, vy:0, lastTouchTeam:0, lastTouchId:null, lastTouchAt:0 };
+    state.teamScores = {};
+    state.goals = [];
+    const teams = soccerActiveTeams();
+    for(let i=0;i<teams.length;i++){
+      const ang = (i/teams.length) * Math.PI * 2;
+      const r = WORLD * 0.85;
+      state.goals.push({ team:teams[i], x:Math.cos(ang)*r, y:Math.sin(ang)*r, r:GOAL_RADIUS });
+      state.teamScores[teams[i]] = 0;
+    }
+  }
+  function resetBallToCenter(){
+    if(!state.ball) return;
+    state.ball.x = 0; state.ball.y = 0;
+    state.ball.vx = 0; state.ball.vy = 0;
+    state.ball.lastTouchTeam = 0;
+    state.ball.lastTouchId = null;
+  }
+  function tickSoccer(){
+    if(state.gameMode !== 'soccer' || !state.ball || state.roundEnded) return;
+    const ball = state.ball;
+    // Integrate
+    ball.x += ball.vx; ball.y += ball.vy;
+    ball.vx *= BALL_FRICTION; ball.vy *= BALL_FRICTION;
+    // Speed cap so headers don't fling it out of the world
+    const sp = Math.hypot(ball.vx, ball.vy);
+    if(sp > BALL_MAX_SPEED){ ball.vx *= BALL_MAX_SPEED/sp; ball.vy *= BALL_MAX_SPEED/sp; }
+    // World edge bounce (lossy)
+    if(ball.x >  WORLD){ ball.x =  WORLD; ball.vx = -Math.abs(ball.vx)*0.7; }
+    if(ball.x < -WORLD){ ball.x = -WORLD; ball.vx =  Math.abs(ball.vx)*0.7; }
+    if(ball.y >  WORLD){ ball.y =  WORLD; ball.vy = -Math.abs(ball.vy)*0.7; }
+    if(ball.y < -WORLD){ ball.y = -WORLD; ball.vy =  Math.abs(ball.vy)*0.7; }
+    // Gravity wells
+    for(const w of state.gravWells){
+      const dx = w.x - ball.x, dy = w.y - ball.y;
+      const d2 = dx*dx + dy*dy;
+      if(d2 < 1800*1800){
+        const d = Math.sqrt(d2) || 1;
+        const f = Math.min(2.5, w.strength * 0.0006 / Math.max(d*0.001, 0.4));
+        ball.vx += dx/d * f;
+        ball.vy += dy/d * f;
+      }
+    }
+    // Asteroid bounce
+    for(const a of state.asteroids){
+      const dx = ball.x - a.x, dy = ball.y - a.y;
+      const d2 = dx*dx + dy*dy;
+      const minD = BALL_RADIUS + a.r;
+      if(d2 < minD*minD && d2 > 0){
+        const d = Math.sqrt(d2);
+        const nx = dx/d, ny = dy/d;
+        ball.x = a.x + nx*minD; ball.y = a.y + ny*minD;
+        const dot = ball.vx*nx + ball.vy*ny;
+        if(dot < 0){
+          ball.vx -= 1.7 * dot * nx;
+          ball.vy -= 1.7 * dot * ny;
+          ball.vx *= 0.85; ball.vy *= 0.85;
+        }
+      }
+    }
+    // Ship ram
+    for(const id in state.players){
+      const p = state.players[id];
+      if(!p || !p.alive || p.docked) continue;
+      const dx = ball.x - p.x, dy = ball.y - p.y;
+      const d2 = dx*dx + dy*dy;
+      const minD = BALL_RADIUS + 18; // ship hull ~18u
+      if(d2 < minD*minD && d2 > 0){
+        const d = Math.sqrt(d2);
+        const nx = dx/d, ny = dy/d;
+        ball.x = p.x + nx*minD; ball.y = p.y + ny*minD;
+        // Push ball with the relative-velocity component along the contact normal.
+        const rvx = ball.vx - (p.vx||0), rvy = ball.vy - (p.vy||0);
+        const dot = rvx*nx + rvy*ny;
+        if(dot < 0){
+          ball.vx -= 1.6 * dot * nx;
+          ball.vy -= 1.6 * dot * ny;
+        }
+        // A direct ram also gives a small kick so even slow nudges push the ball.
+        ball.vx += nx * 0.4;
+        ball.vy += ny * 0.4;
+        if(p.team >= 1 && p.team <= 5){
+          ball.lastTouchTeam = p.team;
+          ball.lastTouchId = p.id;
+          ball.lastTouchAt = state.tick;
+        }
+      }
+    }
+    // Goal detection
+    for(const goal of state.goals){
+      const dx = ball.x - goal.x, dy = ball.y - goal.y;
+      if(dx*dx + dy*dy < goal.r * goal.r){
+        const scoringTeam = ball.lastTouchTeam;
+        const lastName = state.players[ball.lastTouchId]?.name || 'unknown';
+        if(scoringTeam && scoringTeam === goal.team){
+          // Own goal — every OTHER active team gets a point.
+          for(const t in state.teamScores){
+            if(parseInt(t,10) !== goal.team) state.teamScores[t]++;
+          }
+          killFeed('⚠ OWN GOAL by '+lastName+' (Team '+goal.team+')');
+          if(ball.lastTouchId === state.me.id) chatLine('⚠ Own goal — every other team scored!');
+        } else if(scoringTeam){
+          state.teamScores[scoringTeam] = (state.teamScores[scoringTeam]||0) + 1;
+          killFeed('⚽ Goal by '+lastName+' — Team '+scoringTeam);
+          if(ball.lastTouchId === state.me.id) chatLine('⚽ GOAL!');
+        } else {
+          // Nobody had touched the ball — no score, but reset.
+        }
+        resetBallToCenter();
+        // Score-limit end
+        if(state.killGoal > 0){
+          for(const t in state.teamScores){
+            if(state.teamScores[t] >= state.killGoal){ endRound(); return; }
+          }
+        }
+        break;
+      }
+    }
+  }
+
   /* -------- Infection mode -------- */
   const INFECTED_TEAM = 6;
 
@@ -2985,6 +3139,28 @@ const Game=(()=>{
         }
       }
     }
+    // Soccer: bullets push the ball. Bigger damage = bigger kick.
+    if(state.gameMode==='soccer' && state.ball){
+      const ball = state.ball;
+      for(const b of state.bullets){
+        if(b._dead) continue;
+        const dx = ball.x - b.x, dy = ball.y - b.y;
+        const minD = BALL_RADIUS + b.r;
+        if(dx*dx + dy*dy < minD*minD){
+          const kick = 0.5 + (b.dmg||3) * 0.25;  // basic gun ≈ 1.25, plasma ≈ 3.5
+          const bsp = Math.hypot(b.vx, b.vy) || 1;
+          ball.vx += (b.vx/bsp) * kick;
+          ball.vy += (b.vy/bsp) * kick;
+          b._dead = true;
+          const shooter = state.players[b.owner];
+          if(shooter && shooter.team >= 1 && shooter.team <= 5){
+            ball.lastTouchTeam = shooter.team;
+            ball.lastTouchId = shooter.id;
+            ball.lastTouchAt = state.tick;
+          }
+        }
+      }
+    }
     // bullets vs players
     for(const b of state.bullets){
       if(b._dead) continue;
@@ -3389,7 +3565,15 @@ const Game=(()=>{
     // live leaderboard
     const pp=document.getElementById('peers');
     let s='';
-    if(state.gameMode==='race'){
+    if(state.gameMode==='soccer' && state.teamScores){
+      s='<div class="title">Soccer'+(state.killGoal?' · target '+state.killGoal:'')+'</div>';
+      const teams = Object.keys(state.teamScores).map(t=>parseInt(t,10)).sort((a,b)=>state.teamScores[b]-state.teamScores[a]);
+      teams.forEach(t => {
+        const isMyTeam = me && me.team===t;
+        const color = teamCssColor(t);
+        s += `<div class="${isMyTeam?'you':''}"><span style="color:${color}">Team ${t}</span>: ${state.teamScores[t]}</div>`;
+      });
+    } else if(state.gameMode==='race'){
       const racers=Object.values(state.players).filter(p=>!p.pirate && !p.trader);
       // sort: lap desc, checkpoint desc, distance asc
       racers.forEach(p=>{
@@ -4349,6 +4533,49 @@ const Game=(()=>{
       fxCtx.restore();
     }
 
+    // Soccer: goals + ball (world-space, scales with zoom)
+    if(state.gameMode==='soccer' && me && state.ball){
+      withZoom(()=>{
+        // Goals as colored team rings
+        for(const goal of state.goals){
+          const sx = cx + (goal.x-me.x)*dpr;
+          const sy = cy - (goal.y-me.y)*dpr;
+          const rPx = goal.r * dpr;
+          const c = (goal.team>=1 && goal.team<=5) ? activeTeamColors()[goal.team-1] : [0.7,0.7,0.7];
+          const rgb = `${Math.round(c[0]*255)},${Math.round(c[1]*255)},${Math.round(c[2]*255)}`;
+          fxCtx.strokeStyle = `rgba(${rgb},0.4)`;
+          fxCtx.lineWidth = 14*dpr;
+          fxCtx.beginPath(); fxCtx.arc(sx, sy, rPx, 0, Math.PI*2); fxCtx.stroke();
+          fxCtx.strokeStyle = `rgba(${rgb},0.9)`;
+          fxCtx.lineWidth = 4*dpr;
+          fxCtx.beginPath(); fxCtx.arc(sx, sy, rPx, 0, Math.PI*2); fxCtx.stroke();
+          // Goal label
+          fxCtx.font = `bold ${20*dpr}px Consolas, monospace`;
+          fxCtx.fillStyle = `rgba(${rgb},0.95)`;
+          fxCtx.textAlign = 'center'; fxCtx.textBaseline = 'middle';
+          fxCtx.fillText('TEAM '+goal.team, sx, sy);
+        }
+        // Ball: bright pulsing white circle with last-touch tint
+        const ball = state.ball;
+        const bsx = cx + (ball.x-me.x)*dpr;
+        const bsy = cy - (ball.y-me.y)*dpr;
+        const pulse = 0.85 + 0.15*Math.sin(performance.now()*0.008);
+        let tint = [1,1,1];
+        if(ball.lastTouchTeam>=1 && ball.lastTouchTeam<=5){
+          const tc = activeTeamColors()[ball.lastTouchTeam-1];
+          tint = [0.6+0.4*tc[0], 0.6+0.4*tc[1], 0.6+0.4*tc[2]];
+        }
+        const trgb = `${Math.round(tint[0]*255)},${Math.round(tint[1]*255)},${Math.round(tint[2]*255)}`;
+        fxCtx.fillStyle = `rgba(${trgb},${pulse*0.25})`;
+        fxCtx.beginPath(); fxCtx.arc(bsx, bsy, BALL_RADIUS*dpr*1.4, 0, Math.PI*2); fxCtx.fill();
+        fxCtx.fillStyle = `rgba(${trgb},${pulse})`;
+        fxCtx.beginPath(); fxCtx.arc(bsx, bsy, BALL_RADIUS*dpr, 0, Math.PI*2); fxCtx.fill();
+        fxCtx.strokeStyle = `rgba(20,20,20,0.6)`;
+        fxCtx.lineWidth = 2*dpr;
+        fxCtx.beginPath(); fxCtx.arc(bsx, bsy, BALL_RADIUS*dpr, 0, Math.PI*2); fxCtx.stroke();
+      });
+    }
+
     // race: glowing ring at next checkpoint + screen-edge arrow when off-screen
     if(state.gameMode==='race' && me && me.alive && state.raceCheckpoints.length){
       const idx=(me.checkpoint||0)%state.raceCheckpoints.length;
@@ -4604,6 +4831,8 @@ const Game=(()=>{
     if(state.killGoal>0 && !state.roundEnded && killLeader()>=state.killGoal){
       endRound();
     }
+    // Soccer mode physics + scoring tick
+    if(state.gameMode==='soccer' && !state.roundEnded) tickSoccer();
     // Infection mode bookkeeping
     if(state.gameMode==='infection' && !state.roundEnded){
       // Patient zero — picked deterministically a few seconds after spawn-in so all peers
@@ -4818,6 +5047,7 @@ const Game=(()=>{
     }
     state.pirateIds = []; state.traderIds = []; state.aiIds = [];
     state.kingActive = false; state.piratesKilled = 0;
+    state.ball = null; state.goals = []; state.teamScores = {};
     state.gameMode = 'deathmatch'; state.killGoal = 0; state.roundEndTick = 0;
     state.raceCheckpoints = []; state.raceFinishOrder = []; state.raceCountdown = 0;
     state.mode = 'playing'; state.roundEnded = false;
@@ -4882,6 +5112,7 @@ const Game=(()=>{
     state.raceCheckpoints = []; state.raceCountdown = 0;
     state.racePeersReady = new Set();
     state.kingActive = false; state.piratesKilled = 0;
+    state.ball = null; state.goals = []; state.teamScores = {};
     state.worldSeed = 0;
     state.pendingStart = null;
     state.killGoal = 0; state.roundEndTick = 0;
