@@ -145,6 +145,17 @@
     <h3>Recent changes <button onclick="Game.toggleChangelog()" style="float:right;font-size:11px;padding:3px 8px;min-height:0">Close</button></h3>
     <div class="body" id="changelogBody" style="font-size:12px;line-height:1.55">Loading…</div>
   </div>
+  <div id="answerModal" class="panel" style="display:none;left:50%;top:50%;transform:translate(-50%,-50%);width:min(540px,92vw);z-index:11">
+    <h3>Receive Answer <button onclick="Game.closeAnswerModal()" style="float:right;font-size:11px;padding:3px 8px;min-height:0">Cancel</button></h3>
+    <div class="body">
+      <div class="row dim" style="font-size:12px;margin-bottom:6px">Your friend's reply should start with <code>sortie-answer:</code>. Paste it below and tap Connect.</div>
+      <textarea id="answerInput" rows="4" placeholder="Paste answer string here" style="width:100%;background:#012;color:#cfe;border:1px solid #2af;padding:6px;font-family:inherit;box-sizing:border-box;border-radius:3px"></textarea>
+      <div class="row" style="margin-top:8px;display:flex;gap:6px">
+        <button onclick="Game.pasteAnswerIntoModal()">Paste</button>
+        <button class="good" onclick="Game.submitAnswerFromModal()">Connect</button>
+      </div>
+    </div>
+  </div>
 
   <div id="vote" class="panel"><span id="voteText"></span>
     <button class="good" onclick="Game.castVote(true)">Yes</button>
@@ -196,8 +207,8 @@
             <button onclick="Game.startSolo()">Start Game</button>
           </div>
           <hr>
-          <div class="row dim">LAN / Internet — WebRTC handshake. Host taps Create Offer (link auto-copies); send it to friend any way you like. Friend opens link, taps Accept Pasted Offer, sends their answer link back. Host pastes it and taps Accept Pasted Answer. Tip on iOS: send the link fast — Safari may drop the connection if backgrounded too long.</div>
-          <div class="row"><button onclick="Game.makeOffer()">Create Offer</button> <button onclick="Game.acceptOffer()">Accept Pasted Offer</button> <button onclick="Game.acceptAnswer()">Accept Pasted Answer</button></div>
+          <div class="row dim">LAN / Internet — WebRTC handshake. Host taps Create Offer (link auto-copies); send the link to your friend. Friend opens the link, taps Accept Pasted Offer, copies the resulting <code>sortie-answer:</code> string back to host. Host taps Receive Answer and pastes. Tip on iOS: never tap your own answer link or you'll reload your offer tab — the new string format prevents that on purpose.</div>
+          <div class="row"><button onclick="Game.makeOffer()">Create Offer</button> <button onclick="Game.acceptOffer()">Accept Pasted Offer</button> <button onclick="Game.openAnswerModal()">Receive Answer</button></div>
           <div class="row"><button onclick="Game.sdpCopy()">Copy</button> <button onclick="Game.sdpPaste()">Paste</button> <button onclick="Game.sdpShare()">Share Link</button></div>
           <textarea id="sdp" rows="3" placeholder="Paste offer/answer link or SDP here"></textarea>
           <div id="sdpLink" class="row dim" style="font-size:11px;word-break:break-all;display:none"></div>
@@ -3894,11 +3905,22 @@ const Game=(()=>{
     }
     try { return decodeURIComponent(escape(bin)); } catch(_) { return null; }
   }
-  // Pull an SDP JSON string out of arbitrary input: raw JSON, share URL with #offer=/#answer=, or a bare packed blob.
-  // If expectedRole is 'offer' or 'answer', reject URLs of the opposite role.
+  // Pull an SDP JSON string out of arbitrary input. Accepts:
+  //   - raw JSON SDP string
+  //   - URL hash form:  https://.../#offer=<packed>
+  //   - prefixed blob form: sortie-offer:<packed>  or  sortie-answer:<packed>
+  //   - bare packed blob
+  // If expectedRole is 'offer' or 'answer', reject other-role inputs.
   async function extractSdp(text, expectedRole){
     if(!text) return null;
     text = text.trim();
+    // Prefixed blob: sortie-offer:... or sortie-answer:...
+    const prefixMatch = text.match(/^sortie-(offer|answer):([A-Za-z0-9_\-]+)/);
+    if(prefixMatch){
+      if(expectedRole && prefixMatch[1]!==expectedRole) return null;
+      return await unpackSdp(prefixMatch[2]);
+    }
+    // URL hash form: #offer=... or #answer=...
     if(expectedRole){
       const opp = expectedRole==='offer' ? 'answer' : 'offer';
       if(text.match(new RegExp('[#&]'+opp+'='))) return null;
@@ -4016,12 +4038,14 @@ const Game=(()=>{
     pc.onicecandidate=async e=>{
       if(!e.candidate){
         const sdp = JSON.stringify(pc.localDescription);
-        const url = shareUrlFor('answer', await packSdp(sdp));
-        document.getElementById('sdp').value = url;       // show URL, not raw SDP
-        showShareUrl(url);
+        // Plain (non-URL) form so chat apps don't turn it into a clickable link.
+        // The host MUST paste it, not tap it — otherwise they'd reload their own offer tab.
+        const blob = 'sortie-answer:'+(await packSdp(sdp));
+        document.getElementById('sdp').value = blob;
+        showShareUrl(blob);
         setLobbyStatus(retry
-          ? 'Answer link refreshed (iOS suspended us). Send THIS new link back.'
-          : 'Answer link ready — copied to clipboard. Send it back to the host.');
+          ? 'Answer refreshed (iOS suspended us). Copy and send THIS new answer back.'
+          : 'Answer ready — copied to clipboard. Send it back to the host.');
       }
     };
     await pc.setRemoteDescription(off);
@@ -4039,19 +4063,45 @@ const Game=(()=>{
   }
 
   async function acceptAnswer(){
-    if(!pendingPC){ setLobbyStatus('No pending offer in this tab — create one first.'); return; }
-    const raw = await extractSdp(document.getElementById('sdp').value, 'answer');
-    if(!raw){ setLobbyStatus('No valid answer in textarea — paste the answer link from your friend first.'); return; }
-    let ans; try { ans = JSON.parse(raw); } catch(_) { setLobbyStatus('Answer is not valid SDP.'); return; }
-    // If the pc died while host was off sharing, this paste won't match — regenerate first.
+    // Underlying handler used by both the modal and (for back-compat) any direct call.
+    // Returns true on success, false on any error.
+    if(!pendingPC){ setLobbyStatus('No pending offer in this tab — create one first.'); return false; }
+    const src = document.getElementById('answerInput')?.value || document.getElementById('sdp').value;
+    const raw = await extractSdp(src, 'answer');
+    if(!raw){ setLobbyStatus('No valid answer — paste the sortie-answer string from your friend.'); return false; }
+    let ans; try { ans = JSON.parse(raw); } catch(_) { setLobbyStatus('Answer is not valid SDP.'); return false; }
     if(pendingPC.connectionState==='failed' || pendingPC.connectionState==='closed'){
-      setLobbyStatus('Old offer expired (iOS likely suspended us). Recreating — share the new link first, then paste the matching answer.');
-      handshakeStart = Date.now(); // reset 5-min window
+      setLobbyStatus('Old offer expired (iOS likely suspended us). Recreating — share the new link, then paste the matching answer.');
+      handshakeStart = Date.now();
       await _makeOfferImpl(true);
-      return;
+      return false;
     }
     await pendingPC.setRemoteDescription(ans);
     setLobbyStatus('Answer accepted — waiting for ICE to connect...');
+    return true;
+  }
+
+  function openAnswerModal(){
+    const el = document.getElementById('answerModal'); if(!el) return;
+    const inp = document.getElementById('answerInput'); if(inp) inp.value = '';  // always start empty
+    el.style.display = 'block';
+  }
+  function closeAnswerModal(){
+    const el = document.getElementById('answerModal'); if(!el) return;
+    el.style.display = 'none';
+  }
+  async function pasteAnswerIntoModal(){
+    try {
+      const t = await navigator.clipboard.readText();
+      if(!t){ setLobbyStatus('Clipboard is empty.'); return; }
+      document.getElementById('answerInput').value = t;
+    } catch(_) {
+      setLobbyStatus('Paste blocked — long-press the box and paste manually.');
+    }
+  }
+  async function submitAnswerFromModal(){
+    if(await acceptAnswer()) closeAnswerModal();
+    // On failure leave the modal open so the user can see the status and try again.
   }
 
   // When the tab becomes visible again, if our pc died during a backgrounded share
@@ -4090,12 +4140,16 @@ const Game=(()=>{
     } catch(_) { document.getElementById('lobbyStatus').textContent='Paste blocked — long-press the textarea and paste manually.'; }
   }
   async function sdpShare(){
-    const url = lastShareUrl;
-    const fallbackText = url || document.getElementById('sdp').value;
-    if(!fallbackText){ document.getElementById('lobbyStatus').textContent='Nothing to share yet — create or accept an offer first.'; return; }
+    const blob = lastShareUrl || document.getElementById('sdp').value;
+    if(!blob){ document.getElementById('lobbyStatus').textContent='Nothing to share yet — create or accept an offer first.'; return; }
+    const isUrl = /^https?:\/\//.test(blob);
     if(navigator.share){
-      try { await navigator.share(url ? {title:'Join my Sortie game', url} : {title:'Sortie handshake', text: fallbackText}); return; }
-      catch(_) { /* user cancelled or failed — fall through to copy */ }
+      try {
+        await navigator.share(isUrl
+          ? {title:'Join my Sortie game', url:blob}
+          : {title:'Sortie answer', text:blob});
+        return;
+      } catch(_) { /* user cancelled or failed — fall through to copy */ }
     }
     await sdpCopy();
   }
@@ -4389,7 +4443,7 @@ const Game=(()=>{
   boostEl.addEventListener('pointercancel',()=>{ state.boostHeld=false; boostEl.classList.remove('on'); });
 
   return {
-    startSolo,makeOffer,acceptOffer,acceptAnswer,sdpCopy,sdpPaste,sdpShare,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,
+    startSolo,makeOffer,acceptOffer,acceptAnswer,openAnswerModal,closeAnswerModal,pasteAnswerIntoModal,submitAnswerFromModal,sdpCopy,sdpPaste,sdpShare,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,
     castVote,sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
     lobbySetPlace,lobbyBuilderClick,lobbyGunCfg,lobbySaveDesign,lobbyResetDesign,lobbyLoadDesign,
   };
