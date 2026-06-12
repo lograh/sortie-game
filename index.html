@@ -5381,17 +5381,33 @@ const Game=(()=>{
     const body = document.getElementById('changelogBody');
     body.textContent = 'Loading…';
     try {
-      const r = await fetch('https://api.github.com/repos/lograh/sortie-game/commits?per_page=8', {cache:'no-store'});
+      // Pull more than we need so we still have enough after filtering out commits
+      // that landed AFTER this build was deployed (those aren't live yet).
+      const r = await fetch('https://api.github.com/repos/lograh/sortie-game/commits?per_page=20', {cache:'no-store'});
       if(!r.ok) throw new Error('HTTP '+r.status);
       const commits = await r.json();
       if(!commits.length){ body.textContent = 'No commits found.'; return; }
-      body.innerHTML = commits.map(c => {
+      // document.lastModified is the GitHub Pages Last-Modified header → when THIS file
+      // was deployed. Anything authored after that hasn't shipped yet.
+      let buildTime = NaN;
+      try { buildTime = new Date(document.lastModified).getTime(); } catch(_){}
+      const filtered = commits.filter(c => {
+        if(!Number.isFinite(buildTime)) return true;   // can't parse → show everything
+        const t = c.commit?.author?.date ? new Date(c.commit.author.date).getTime() : 0;
+        return t <= buildTime;
+      }).slice(0, 8);
+      const skipped = commits.length - filtered.length;
+      const list = filtered.map(c => {
         const msg = (c.commit?.message||'').split('\n')[0];
         const sha = (c.sha||'').slice(0,7);
         const date = c.commit?.author?.date ? new Date(c.commit.author.date).toLocaleDateString() : '';
         const url = c.html_url||'#';
         return `<div style="margin-bottom:8px"><a href="${url}" target="_blank" rel="noopener" style="color:#9cf;font-family:Consolas,monospace">${esc(sha)}</a> <span class="dim" style="font-size:10px">${esc(date)}</span><br><span>${esc(msg)}</span></div>`;
       }).join('');
+      const note = skipped > 0
+        ? `<div class="dim" style="font-size:11px;margin-bottom:8px;color:var(--ui-text-heat-mid)">⚠ ${skipped} newer commit${skipped>1?'s':''} on GitHub haven't been deployed to this build yet — reload after a minute to see them.</div>`
+        : '';
+      body.innerHTML = note + (list || 'No deployed commits in window.');
       _changelogLoaded = true;
     } catch(err) {
       body.innerHTML = 'Could not fetch changelog: '+esc(err.message||String(err))+'.<br><span class="dim">(GitHub API may be rate-limited or offline.)</span>';
