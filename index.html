@@ -708,6 +708,23 @@ const Game=(()=>{
     return {maxHp,mass,engines,thrust,turn,guns,repair,scanner,radar,radarRange,shieldMax,boostCap,coolant,maxHeat,heatDecay,heatMult};
   }
 
+  // Push a spawn point just outside any radioactive nebula it lands inside.
+  // Used as a safety net — world-gen also tries to keep nebulae off platforms.
+  function nudgeOutOfRadiation(x, y){
+    for(const n of state.nebulae){
+      if(!n.radioactive) continue;
+      const dx=x-n.x, dy=y-n.y;
+      const d=Math.hypot(dx,dy);
+      if(d < n.r + 50){
+        const len = d>1 ? d : 1;
+        const ux = d>1 ? dx/len : 1;
+        const uy = d>1 ? dy/len : 0;
+        x = n.x + ux * (n.r + 120);
+        y = n.y + uy * (n.r + 120);
+      }
+    }
+    return {x, y};
+  }
   function spawnPlayer(id,name,team){
     const layout=makeShipLayout();
     const p={id,name:name||'P-'+id.slice(0,3),team:team||0,x:(Math.random()-0.5)*1000,y:(Math.random()-0.5)*1000,vx:0,vy:0,rot:0,
@@ -742,15 +759,22 @@ const Game=(()=>{
     }
     state.nebulae=[];
     for(let i=0;i<12;i++){
-      const a=rng()*Math.PI*2;
-      const r=rng()*WORLD*0.85;
-      const radioactive = rng()<0.30; // ~30% are radioactive
-      state.nebulae.push({
-        x:Math.cos(a)*r, y:Math.sin(a)*r,
-        r:600+rng()*900,
-        seed:rng()*1000,
-        radioactive
-      });
+      // Try up to 20 placements; reject if overlapping any platform's defense ring.
+      // Deterministic for a given seed since every peer consumes the rng the same way.
+      let x=0, y=0, nebR=0, radioactive=false;
+      for(let tries=0; tries<20; tries++){
+        const a=rng()*Math.PI*2;
+        const r=rng()*WORLD*0.85;
+        nebR=600+rng()*900;
+        radioactive = rng()<0.30; // ~30% are radioactive
+        x=Math.cos(a)*r; y=Math.sin(a)*r;
+        let bad=false;
+        for(const pl of state.platforms){
+          if(Math.hypot(x-pl.x,y-pl.y) < nebR + pl.r + PLATFORM_DEFENSE + 150){ bad=true; break; }
+        }
+        if(!bad) break;
+      }
+      state.nebulae.push({ x, y, r:nebR, seed:rng()*1000, radioactive });
     }
     state.gravWells=[];
     const wellCount=3+Math.floor(rng()*3);
@@ -1133,6 +1157,8 @@ const Game=(()=>{
       const hub=state.platforms[0];
       if(hub){ p.x=hub.x; p.y=hub.y; p.vx=0; p.vy=0; }
     }
+    const safe = nudgeOutOfRadiation(p.x, p.y);
+    p.x = safe.x; p.y = safe.y;
     p.spawnX=p.x; p.spawnY=p.y;
     p.grace=180;
     state.players[state.me.id]=p;
