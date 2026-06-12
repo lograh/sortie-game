@@ -12,18 +12,58 @@
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#000000">
 <style>
+  :root{
+    --ui-accent:#2af;
+    --ui-bg-shallow:#024;
+    --ui-bg-hover:#046;
+    --ui-bg-input:#012;
+    --ui-bg-panel:rgba(8,16,24,.86);
+    --ui-glow:#08f6;
+    --ui-h3-bg:#114;
+    --ui-active:#7df;
+    --ui-good-border:#5f8;
+    --ui-good-text:#cfc;
+    --ui-bad-border:#f55;
+    --ui-bad-text:#fcc;
+  }
+  /* Tritanopia (blue-blind): swap the blue UI accent for a green/teal palette they CAN see. */
+  body[data-cb="tritan"]{
+    --ui-accent:#7d7;
+    --ui-bg-shallow:#042;
+    --ui-bg-hover:#064;
+    --ui-bg-input:#021;
+    --ui-bg-panel:rgba(8,24,16,.86);
+    --ui-glow:rgba(80,220,120,0.4);
+    --ui-h3-bg:#141;
+    --ui-active:#afa;
+  }
+  /* Protan/Deuteranopia (red/green-blind): UI stays blue (they see it fine), but green/red
+     status colors get swapped to yellow/orange which they CAN distinguish. */
+  body[data-cb="protan"], body[data-cb="deutan"]{
+    --ui-good-border:#fd4;
+    --ui-good-text:#fea;
+    --ui-bad-border:#fa3;
+    --ui-bad-text:#fed;
+  }
   html,body{margin:0;padding:0;height:100%;background:#000;color:#cfe;font-family:Consolas,monospace;overflow:hidden;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;touch-action:none;overscroll-behavior:none}
   #stage{position:fixed;inset:0}
   #cv{position:absolute;inset:0;width:100%;height:100%;display:block;background:#000;touch-action:none}
   #fx{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:block}
-  .panel{position:absolute;background:rgba(8,16,24,.86);border:1px solid #2af;border-radius:6px;color:#cfe;box-shadow:0 0 12px #08f6;font-size:13px;pointer-events:auto}
-  .panel h3{margin:0;padding:8px 12px;font-size:13px;background:#114;cursor:move;border-bottom:1px solid #2af;border-radius:6px 6px 0 0;touch-action:none}
+  .panel{position:absolute;background:var(--ui-bg-panel);border:1px solid var(--ui-accent);border-radius:6px;color:#cfe;box-shadow:0 0 12px var(--ui-glow);font-size:13px;pointer-events:auto}
+  .panel h3{margin:0;padding:8px 12px;font-size:13px;background:var(--ui-h3-bg);cursor:move;border-bottom:1px solid var(--ui-accent);border-radius:6px 6px 0 0;touch-action:none}
   .panel .body{padding:10px 12px;max-height:80vh;overflow:auto;-webkit-overflow-scrolling:touch}
-  button{background:#024;color:#cfe;border:1px solid #2af;border-radius:3px;padding:5px 10px;font-family:inherit;cursor:pointer;font-size:13px;min-height:30px;touch-action:manipulation}
-  button:hover{background:#046}
-  button.bad{border-color:#f55;color:#fcc}
-  button.good{border-color:#5f8;color:#cfc}
-  button.active{background:#046;border-color:#7df}
+  button{background:var(--ui-bg-shallow);color:#cfe;border:1px solid var(--ui-accent);border-radius:3px;padding:5px 10px;font-family:inherit;cursor:pointer;font-size:13px;min-height:30px;touch-action:manipulation}
+  button:hover{background:var(--ui-bg-hover)}
+  button.bad{border-color:var(--ui-bad-border);color:var(--ui-bad-text)}
+  button.good{border-color:var(--ui-good-border);color:var(--ui-good-text)}
+  button.active{background:var(--ui-bg-hover);border-color:var(--ui-active)}
+  /* Override inline styles on form controls so the theme applies everywhere */
+  .panel input, .panel select, .panel textarea,
+  #settingsModal input, #settingsModal select{
+    background: var(--ui-bg-input) !important;
+    color: #cfe !important;
+    border-color: var(--ui-accent) !important;
+  }
   #lobby{left:50%;top:50%;transform:translate(-50%,-50%);width:min(1200px,96vw);max-height:96vh;overflow:auto}
   #lobby .body{max-height:none}
   #lobbyGrid{display:grid;gap:14px;grid-template-columns:minmax(280px,1fr) minmax(260px,1fr) minmax(260px,1fr);grid-template-areas:"controls library builder" "controls multiplayer multiplayer"}
