@@ -3602,11 +3602,19 @@ const Game=(()=>{
     try { return decodeURIComponent(escape(bin)); } catch(_) { return null; }
   }
   // Pull an SDP JSON string out of arbitrary input: raw JSON, share URL with #offer=/#answer=, or a bare packed blob.
-  async function extractSdp(text){
+  // If expectedRole is 'offer' or 'answer', reject URLs of the opposite role.
+  async function extractSdp(text, expectedRole){
     if(!text) return null;
     text = text.trim();
-    const m = text.match(/[#&](?:offer|answer)=([A-Za-z0-9_\-]+)/);
-    if(m) return await unpackSdp(m[1]);
+    if(expectedRole){
+      const opp = expectedRole==='offer' ? 'answer' : 'offer';
+      if(text.match(new RegExp('[#&]'+opp+'='))) return null;
+      const m = text.match(new RegExp('[#&]'+expectedRole+'=([A-Za-z0-9_\\-]+)'));
+      if(m) return await unpackSdp(m[1]);
+    } else {
+      const m = text.match(/[#&](?:offer|answer)=([A-Za-z0-9_\-]+)/);
+      if(m) return await unpackSdp(m[1]);
+    }
     if(text.startsWith('{')) return text;
     if(/^[A-Za-z0-9_\-]+$/.test(text) && text.length>40){
       const j = await unpackSdp(text); if(j) return j;
@@ -3643,30 +3651,40 @@ const Game=(()=>{
     if(document.visibilityState === 'hidden'){ _pendingStatus = t; return; }
     setLobbyStatusReal(t);
   }
-  document.addEventListener('visibilitychange', ()=>{
-    if(document.visibilityState === 'hidden') _wasHiddenSince = Date.now();
-    else if(_pendingStatus){ setLobbyStatusReal(_pendingStatus); _pendingStatus = null; }
-  });
-  // Surface real ICE/peer connection state so users know what's actually happening.
+
+  // Handshake state: we hold the door open for 5 minutes from the user's first action.
+  // While inside this window we suppress scary "failed" messages and, when the tab
+  // becomes visible again, transparently recreate a dead pc with a fresh link.
+  const HANDSHAKE_WINDOW_MS = 5*60*1000;
+  let handshakeStart = 0;
+  let handshakeKind = null;     // 'host' | 'guest' | null
+  let cachedOfferSDP = null;    // for guest, the offer SDP to re-use on retry
+  function handshakeAlive(){ return handshakeKind && (Date.now()-handshakeStart) < HANDSHAKE_WINDOW_MS; }
+  function clearHandshake(){ handshakeKind=null; handshakeStart=0; cachedOfferSDP=null; }
+
+  // Surface ICE state but stay calm during pre-connection — auto-retry handles transient failures.
   function watchPC(pc, who){
     pc.oniceconnectionstatechange = ()=>{
       const s = pc.iceConnectionState;
-      const wasRecentlyHidden = (Date.now() - _wasHiddenSince) < 30000;
       if(s==='checking') setLobbyStatus(who+': checking connection...');
       else if(s==='connected' || s==='completed') setLobbyStatus(who+': linked. Opening data channel...');
-      else if(s==='failed'){
-        const why = (document.visibilityState==='hidden' || wasRecentlyHidden)
-          ? '(iOS likely paused the tab while you were sharing — tap Create Offer again to retry)'
-          : '(NAT/firewall? Try same network, or add a TURN server.)';
-        setLobbyStatus(who+': connection failed '+why);
+      else if(s==='failed' || s==='disconnected'){
+        if(handshakeAlive()){
+          // Don't alarm the user — we'll silently retry on return to the tab.
+          setLobbyStatus(who+': link not yet established — still trying. Send/receive the link if you haven\'t.');
+        } else if(handshakeKind){
+          setLobbyStatus(who+': giving up after 5 minutes. Tap Create Offer (or paste a new link) to try again.');
+        } else {
+          setLobbyStatus(who+': '+s+'.');
+        }
       }
-      else if(s==='disconnected') setLobbyStatus(who+': disconnected.');
     };
   }
 
-  async function makeOffer(){
+  async function _makeOfferImpl(retry){
     state.me.name=document.getElementById('pname').value||state.me.name;
     clearShareUrl();
+    try { pendingPC?.close(); } catch(_){}
     const pc=new RTCPeerConnection(ICE);
     watchPC(pc,'host');
     const dc=pc.createDataChannel('g');
@@ -3674,45 +3692,95 @@ const Game=(()=>{
     pc.onicecandidate=async e=>{
       if(!e.candidate){
         const sdp = JSON.stringify(pc.localDescription);
-        document.getElementById('sdp').value = sdp;
-        showShareUrl(shareUrlFor('offer', await packSdp(sdp)));
-        document.getElementById('lobbyStatus').textContent='Offer ready — tap Share Link and send to your friend.';
+        const url = shareUrlFor('offer', await packSdp(sdp));
+        document.getElementById('sdp').value = url;       // show URL, not raw SDP
+        showShareUrl(url);                                 // also displays + auto-copies
+        setLobbyStatus(retry
+          ? 'Link refreshed (iOS suspended us). Share THIS new link if you haven\'t connected yet.'
+          : 'Offer link ready — copied to clipboard. Send it to your friend.');
       }
     };
     await pc.setLocalDescription(await pc.createOffer());
     pendingPC=pc;
-    document.getElementById('lobbyStatus').textContent='Offer being generated...';
+    if(!retry) setLobbyStatus('Generating offer link...');
   }
-  async function acceptOffer(){
+  async function makeOffer(){
+    handshakeStart = Date.now();
+    handshakeKind = 'host';
+    cachedOfferSDP = null;
+    await _makeOfferImpl(false);
+  }
+
+  async function _acceptOfferImpl(retry){
+    if(!cachedOfferSDP) return;
     state.me.name=document.getElementById('pname').value||state.me.name;
-    const raw = await extractSdp(document.getElementById('sdp').value);
-    if(!raw){ document.getElementById('lobbyStatus').textContent='No valid offer in textarea — paste the link first.'; return; }
-    let off; try { off = JSON.parse(raw); } catch(_) { document.getElementById('lobbyStatus').textContent='Offer is not valid SDP.'; return; }
+    let off; try { off = JSON.parse(cachedOfferSDP); } catch(_) { setLobbyStatus('Offer is not valid SDP.'); return; }
     clearShareUrl();
+    try { pendingPC?.close(); } catch(_){}
     const pc=new RTCPeerConnection(ICE);
     watchPC(pc,'guest');
     pc.ondatachannel=e=>setupDC(pc,e.channel);
     pc.onicecandidate=async e=>{
       if(!e.candidate){
         const sdp = JSON.stringify(pc.localDescription);
-        document.getElementById('sdp').value = sdp;
-        showShareUrl(shareUrlFor('answer', await packSdp(sdp)));
-        document.getElementById('lobbyStatus').textContent='Answer ready — tap Share Link and send back to the host.';
+        const url = shareUrlFor('answer', await packSdp(sdp));
+        document.getElementById('sdp').value = url;       // show URL, not raw SDP
+        showShareUrl(url);
+        setLobbyStatus(retry
+          ? 'Answer link refreshed (iOS suspended us). Send THIS new link back.'
+          : 'Answer link ready — copied to clipboard. Send it back to the host.');
       }
     };
     await pc.setRemoteDescription(off);
     await pc.setLocalDescription(await pc.createAnswer());
     pendingPC=pc;
-    document.getElementById('lobbyStatus').textContent='Answer generating...';
+    if(!retry) setLobbyStatus('Generating answer link...');
   }
+  async function acceptOffer(){
+    const raw = await extractSdp(document.getElementById('sdp').value, 'offer');
+    if(!raw){ setLobbyStatus('No valid offer in textarea — paste your friend\'s offer link first.'); return; }
+    handshakeStart = Date.now();
+    handshakeKind = 'guest';
+    cachedOfferSDP = raw;
+    await _acceptOfferImpl(false);
+  }
+
   async function acceptAnswer(){
-    if(!pendingPC){ document.getElementById('lobbyStatus').textContent='No pending offer in this tab — create one first.'; return; }
-    const raw = await extractSdp(document.getElementById('sdp').value);
-    if(!raw){ document.getElementById('lobbyStatus').textContent='No valid answer in textarea — paste the link first.'; return; }
-    let ans; try { ans = JSON.parse(raw); } catch(_) { document.getElementById('lobbyStatus').textContent='Answer is not valid SDP.'; return; }
+    if(!pendingPC){ setLobbyStatus('No pending offer in this tab — create one first.'); return; }
+    const raw = await extractSdp(document.getElementById('sdp').value, 'answer');
+    if(!raw){ setLobbyStatus('No valid answer in textarea — paste the answer link from your friend first.'); return; }
+    let ans; try { ans = JSON.parse(raw); } catch(_) { setLobbyStatus('Answer is not valid SDP.'); return; }
+    // If the pc died while host was off sharing, this paste won't match — regenerate first.
+    if(pendingPC.connectionState==='failed' || pendingPC.connectionState==='closed'){
+      setLobbyStatus('Old offer expired (iOS likely suspended us). Recreating — share the new link first, then paste the matching answer.');
+      handshakeStart = Date.now(); // reset 5-min window
+      await _makeOfferImpl(true);
+      return;
+    }
     await pendingPC.setRemoteDescription(ans);
     setLobbyStatus('Answer accepted — waiting for ICE to connect...');
   }
+
+  // When the tab becomes visible again, if our pc died during a backgrounded share
+  // and we're still within the 5-minute window, transparently rebuild it.
+  async function maybeRetryHandshake(){
+    if(!handshakeAlive()) return;
+    const dead = !pendingPC || pendingPC.connectionState==='failed' || pendingPC.connectionState==='closed';
+    // Already connected? Don't touch it.
+    const peerCount = Object.keys(Net.peers||{}).length;
+    if(!dead || peerCount>0) return;
+    if(handshakeKind==='host') await _makeOfferImpl(true);
+    else if(handshakeKind==='guest' && cachedOfferSDP) await _acceptOfferImpl(true);
+  }
+
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState === 'hidden'){
+      _wasHiddenSince = Date.now();
+    } else {
+      if(_pendingStatus){ setLobbyStatusReal(_pendingStatus); _pendingStatus = null; }
+      maybeRetryHandshake();
+    }
+  });
 
   async function sdpCopy(){
     const text = lastShareUrl || document.getElementById('sdp').value;
@@ -3760,6 +3828,7 @@ const Game=(()=>{
     const peerId=rid();
     Net.peers[peerId]={pc,dc};
     dc.onopen=()=>{
+      clearHandshake();
       setLobbyStatus('Peer connected — chat below, then host taps Start.');
       // Mid-game join: still goes through the existing vote flow.
       if(state.mode!=='lobby') askVote(peerId,'Remote');
