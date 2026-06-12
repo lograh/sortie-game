@@ -203,6 +203,10 @@
   .touchOn #joystick{display:block}
   .touchOn #firebtn{display:flex}
   .touchOn #boostbtn{display:flex}
+  /* Hide flight controls while docked/trading/building — they'd overlap the hub UI. */
+  body.docked.touchOn #joystick,
+  body.docked.touchOn #firebtn,
+  body.docked.touchOn #boostbtn{display:none !important}
   .touchOn #peers{top:calc(50px + env(safe-area-inset-top));right:calc(8px + env(safe-area-inset-right))}
   /* Hide gameplay UI while the lobby modal is up — only the lobby should be visible. */
   body.mode-lobby #topbar,
@@ -1183,6 +1187,7 @@ const Game=(()=>{
       document.getElementById('minimap').style.display='none';
       document.getElementById('hud').style.display='none';
       document.getElementById('peers').style.display='none';
+      document.body.classList.add('docked');
       Sound.dock();
     } else {
       // capture any design changes made while docked
@@ -1194,6 +1199,7 @@ const Game=(()=>{
       document.getElementById('topbar').style.display='';
       document.getElementById('hud').style.display='';
       document.getElementById('peers').style.display='';
+      document.body.classList.remove('docked');
       if(state.showMap) document.getElementById('minimap').style.display='block';
     }
   }
@@ -4654,6 +4660,7 @@ const Game=(()=>{
     state.tutorial = null;
     const tov = document.getElementById('tutorialOverlay'); if(tov) tov.style.display='none';
     state.docked = false; state.dockedTrader = null;
+    document.body.classList.remove('docked');
     state.players = {};
     state.bullets = []; state.pickups = []; state.particles = [];
     state.asteroids = []; state.platforms = [];
