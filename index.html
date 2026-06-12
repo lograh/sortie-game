@@ -148,7 +148,7 @@
   </div>
 
   <div id="lobby" class="panel">
-    <h3>Sortie — Lobby</h3>
+    <h3>Sortie — Lobby <span id="buildVersion" style="float:right;font-size:10px;font-weight:normal;color:#789;margin-top:2px"></span></h3>
     <div class="body">
       <div id="lobbyGrid">
         <div id="lobbyControls">
@@ -3911,6 +3911,11 @@ const Game=(()=>{
   document.getElementById('pname').addEventListener('blur', e=>{
     try{ localStorage.setItem(NAME_KEY, e.target.value); }catch(_){}
   });
+  // Build version — uses Last-Modified from GitHub Pages, so it auto-bumps each push.
+  try {
+    const bv=document.getElementById('buildVersion');
+    if(bv) bv.textContent='build '+document.lastModified;
+  } catch(_){}
   // initial lobby UI render (library + pre-build ship)
   renderLobbyLibrary();
   renderLobbyBuilder();
