@@ -41,7 +41,7 @@ Then visit http://localhost:8000.
 | File | Purpose |
 | --- | --- |
 | `index.html` | The entire game (HTML + CSS + JS, WebGL2 renderer). |
-| `trystero.bundle.js` | Vendored [Trystero](https://github.com/dmotz/trystero) 0.25.2 (nostr strategy) — serverless P2P matchmaking via public relays. No account/backend needed. |
+| `trystero-mqtt.js` | Vendored [Trystero](https://github.com/dmotz/trystero) 0.25.2 (MQTT strategy) — serverless P2P matchmaking via public MQTT brokers (EMQX/HiveMQ). No account/backend needed. |
 | `icon.svg` | App icon — the in-game ship on a black background. |
 | `manifest.webmanifest` | PWA manifest so iPad/phone "Add to Home Screen" launches fullscreen. |
 | `LICENSE` | MIT. |

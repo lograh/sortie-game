@@ -1241,6 +1241,7 @@ const Game=(()=>{
   let _trysteroRoom = null;
   let _trysteroSend = null;            // (data, targetTpeer?) => void  (null when not in a room)
   let _currentRoomCode = null;
+  let _getRelaySockets = null;         // Trystero export: returns {url: WebSocket} of broker sockets
   const trysteroToSortie = {};         // trystero peerId -> sortie id
   const sortieToTrystero = {};         // sortie id -> trystero peerId
 
@@ -1275,8 +1276,9 @@ const Game=(()=>{
     if(_trysteroRoom) leaveTrysteroRoom(true);
     setLobbyStatus('Connecting to room '+code+'… (finding peers via public relays)');
     let T;
-    try { T = await import('./trystero.bundle.js'); }
+    try { T = await import('./trystero-mqtt.js'); }
     catch(err){ setLobbyStatus('Could not load networking library: '+(err && err.message || err)); return; }
+    _getRelaySockets = T.getRelaySockets || null;
     let room;
     try { room = T.joinRoom({appId:'sortie-game-v1'}, code); }
     catch(err){ setLobbyStatus('Could not join room: '+(err && err.message || err)); return; }
@@ -1343,6 +1345,15 @@ const Game=(()=>{
   // Live diagnostic: shows raw Trystero connections vs handshake-completed players.
   // Lets us tell apart "relays aren't connecting peers" (raw stays 0) from
   // "peers connect but messages don't flow" (raw > 0 but players stay at 1).
+  function openRelayCount(){
+    if(!_getRelaySockets) return null;
+    try {
+      const socks = _getRelaySockets() || {};
+      let open = 0, total = 0;
+      for(const url in socks){ total++; if(socks[url] && socks[url].readyState === 1) open++; }
+      return {open, total};
+    } catch(_){ return null; }
+  }
   let _roomDiagTimer = null;
   function startRoomDiag(){
     stopRoomDiag();
@@ -1352,19 +1363,27 @@ const Game=(()=>{
       let raw = 0;
       try { raw = Object.keys(_trysteroRoom.getPeers() || {}).length; } catch(_){}
       const known = Object.keys(state.lobbyPeers).length;
+      const relays = openRelayCount();
       let msg = 'Room '+_currentRoomCode+' — ';
-      if(raw === 0) msg += 'searching for peers via relays… (can take 10–30s)';
-      else if(raw > known) msg += raw+' connected, '+(raw-known)+' still handshaking…';
-      else msg += (raw)+' peer'+(raw===1?'':'s')+' connected';
+      if(raw === 0){
+        // Honest status: are we even connected to any broker yet?
+        if(relays && relays.open === 0) msg += 'connecting to relays ('+relays.open+'/'+relays.total+')…';
+        else if(relays) msg += 'on '+relays.open+' relay'+(relays.open===1?'':'s')+', waiting for a peer to join the same code…';
+        else msg += 'searching for peers…';
+      } else if(raw > known){
+        msg += raw+' connected, '+(raw-known)+' still handshaking…';
+      } else {
+        msg += raw+' peer'+(raw===1?'':'s')+' connected';
+      }
       setLobbyStatus(msg);
-    }, 2000);
+    }, 1500);
   }
   function stopRoomDiag(){ if(_roomDiagTimer){ clearInterval(_roomDiagTimer); _roomDiagTimer = null; } }
 
   function leaveTrysteroRoom(quiet){
     stopRoomDiag();
     try { _trysteroRoom?.leave(); } catch(_){}
-    _trysteroRoom=null; _trysteroSend=null; _currentRoomCode=null;
+    _trysteroRoom=null; _trysteroSend=null; _currentRoomCode=null; _getRelaySockets=null;
     for(const k in trysteroToSortie) delete trysteroToSortie[k];
     for(const k in sortieToTrystero) delete sortieToTrystero[k];
     state.lobbyPeers={}; state.peerLastSeen={};
