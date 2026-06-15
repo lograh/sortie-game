@@ -1242,6 +1242,8 @@ const Game=(()=>{
   let _trysteroSend = null;            // (data, targetTpeer?) => void  (null when not in a room)
   let _currentRoomCode = null;
   let _getRelaySockets = null;         // Trystero export: returns {url: WebSocket} of broker sockets
+  let _sawAnyPeerJoin = false;         // diagnostic: has onPeerJoin ever fired this session?
+  let _lastJoinError = null;           // diagnostic: last Trystero onJoinError detail
   const trysteroToSortie = {};         // trystero peerId -> sortie id
   const sortieToTrystero = {};         // sortie id -> trystero peerId
 
@@ -1274,6 +1276,7 @@ const Game=(()=>{
     code = (code||'').trim().toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,8);
     if(!code){ setLobbyStatus('Enter a room code first.'); return; }
     if(_trysteroRoom) leaveTrysteroRoom(true);
+    _sawAnyPeerJoin = false; _lastJoinError = null;
     setLobbyStatus('Connecting to room '+code+'… (finding peers via public relays)');
     let T;
     try { T = await import('./trystero-mqtt.js'); }
@@ -1317,7 +1320,15 @@ const Game=(()=>{
 
     room.onPeerJoin = (tpeer) => {
       console.log('[sortie] peer JOINED (trystero id '+tpeer+')');
+      _sawAnyPeerJoin = true;
+      if(state.mode==='lobby') setLobbyStatus('Peer found — connecting data channel…');
       sendIntroTo(tpeer);
+    };
+    // Trystero surfaces connection/relay failures here — show them so we can diagnose on-device.
+    room.onJoinError = (err) => {
+      const detail = (err && (err.error || err.message)) || (typeof err==='string' ? err : JSON.stringify(err));
+      console.error('[sortie] onJoinError', err);
+      _lastJoinError = detail;   // sticky so the diagnostic poll doesn't clobber it
     };
     room.onPeerLeave = (tpeer) => {
       console.log('[sortie] peer LEFT (trystero id '+tpeer+')');
@@ -1368,7 +1379,9 @@ const Game=(()=>{
       if(raw === 0){
         // Honest status: are we even connected to any broker yet?
         if(relays && relays.open === 0) msg += 'connecting to relays ('+relays.open+'/'+relays.total+')…';
-        else if(relays) msg += 'on '+relays.open+' relay'+(relays.open===1?'':'s')+', waiting for a peer to join the same code…';
+        else if(_sawAnyPeerJoin) msg += 'peer seen but data channel not open (ICE/NAT?)…';
+        else if(_lastJoinError) msg += 'error: '+_lastJoinError;
+        else if(relays) msg += 'on '+relays.open+'/'+relays.total+' relays, no peer on this code yet…';
         else msg += 'searching for peers…';
       } else if(raw > known){
         msg += raw+' connected, '+(raw-known)+' still handshaking…';
