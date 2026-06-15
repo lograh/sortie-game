@@ -1283,7 +1283,13 @@ const Game=(()=>{
     catch(err){ setLobbyStatus('Could not load networking library: '+(err && err.message || err)); return; }
     _getRelaySockets = T.getRelaySockets || null;
     let room;
-    try { room = T.joinRoom({appId:'sortie-game-v1'}, code); }
+    try {
+      // trickleIce:false → gather ALL ICE candidates (incl. the public-IP STUN-reflexive one)
+      // into the SDP before exchanging it, instead of trickling them as separate relay messages
+      // that can be slow/dropped. This mirrors the old manual handshake (which always carried the
+      // public IP and connected reliably). Slightly slower to connect, much more robust.
+      room = T.joinRoom({appId:'sortie-game-v1', trickleIce:false}, code);
+    }
     catch(err){ setLobbyStatus('Could not join room: '+(err && err.message || err)); return; }
     _trysteroRoom = room;
     _currentRoomCode = code;
