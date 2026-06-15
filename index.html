@@ -261,18 +261,6 @@
     <h3>Recent changes <button onclick="Game.toggleChangelog()" style="float:right;font-size:11px;padding:3px 8px;min-height:0">Close</button></h3>
     <div class="body" id="changelogBody" style="font-size:12px;line-height:1.55">Loading…</div>
   </div>
-  <div id="answerModal" class="panel" style="display:none;left:50%;top:50%;transform:translate(-50%,-50%);width:min(540px,92vw);z-index:11">
-    <h3>Receive Answer <button onclick="Game.closeAnswerModal()" style="float:right;font-size:11px;padding:3px 8px;min-height:0">Cancel</button></h3>
-    <div class="body">
-      <div class="row dim" style="font-size:12px;margin-bottom:6px">Your friend's reply should start with <code>sortie-answer:</code>. Paste it below and tap Connect.</div>
-      <textarea id="answerInput" rows="4" placeholder="Paste answer string here" style="width:100%;background:#012;color:#cfe;border:1px solid #2af;padding:6px;font-family:inherit;box-sizing:border-box;border-radius:3px"></textarea>
-      <div class="row" style="margin-top:8px;display:flex;gap:6px">
-        <button onclick="Game.pasteAnswerIntoModal()">Paste</button>
-        <button class="good" onclick="Game.submitAnswerFromModal()">Connect</button>
-      </div>
-    </div>
-  </div>
-
   <div id="vote" class="panel"><span id="voteText"></span>
     <button class="good" onclick="Game.castVote(true)">Yes</button>
     <button class="bad" onclick="Game.castVote(false)">No</button>
@@ -333,11 +321,16 @@
             <button onclick="Game.startTutorial()">Tutorial</button>
           </div>
           <hr>
-          <div class="row dim">LAN / Internet — WebRTC handshake. Host taps Create Offer (link auto-copies); send the link to your friend. When the friend opens the link the offer is accepted automatically — they get a <code>sortie-answer:</code> string. They send that back to the host, who taps Receive Answer and pastes.</div>
-          <div class="row"><button onclick="Game.makeOffer()">Create Offer</button> <button onclick="Game.openAnswerModal()">Receive Answer</button> <button class="bad" id="leaveMeshBtn" onclick="Game.leaveMesh()" style="display:none">Leave Mesh</button></div>
-          <div class="row" id="sdpShareRow" style="display:none"><button onclick="Game.sdpCopy()">Copy</button> <button onclick="Game.sdpShare()">Share Link</button></div>
-          <div id="sdpLink" class="row dim" style="font-size:11px;word-break:break-all;display:none"></div>
-          <div class="row dim" id="lobbyStatus">Idle.</div>
+          <div class="row dim">LAN / Internet — share a room code. One player taps Create Room and sends the code (or link) to everyone. Each friend types the code and taps Join — or just opens the link. Everyone in the same room auto-connects.</div>
+          <div class="row">Room
+            <input id="roomCode" type="text" maxlength="8" placeholder="CODE" autocomplete="off" style="width:90px;text-transform:uppercase;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px">
+            <button onclick="Game.createRoom()">Create</button>
+            <button onclick="Game.joinRoomFromInput()">Join</button>
+            <button class="bad" id="leaveMeshBtn" onclick="Game.leaveMesh()" style="display:none">Leave</button>
+          </div>
+          <div class="row" id="roomShareRow" style="display:none"><button onclick="Game.copyRoomLink()">Copy invite link</button></div>
+          <div id="roomLink" class="row dim" style="font-size:11px;word-break:break-all;display:none"></div>
+          <div class="row dim" id="lobbyStatus">Solo — or create/join a room to play with friends.</div>
           <div class="row dim" style="font-size:11px">Desktop: <span class="tag">W/A/S/D</span> · <span class="tag">Space</span> fire · <span class="tag">Shift</span> boost · <span class="tag">T</span> dock · <span class="tag">M</span> map · <span class="tag">1-6</span> chat. Race: <span class="tag">B</span> super boost · <span class="tag">G</span> gas cloud.</div>
         </div>
         <div id="lobbyLibrary">
@@ -1239,51 +1232,142 @@ const Game=(()=>{
     if(state.showMap) renderMinimap();
   }
 
-  /* -------- Networking (WebRTC mesh) -------- */
+  /* -------- Networking: Trystero room transport --------
+     Trystero gives us a serverless full-mesh (peers find each other through public
+     Nostr relays, then talk directly P2P). It replaces the old manual offer/answer
+     handshake. We keep the Net.broadcast / sendTo API so all game code is unchanged —
+     only the wire underneath swapped. Every message carries `from: <sortie id>`; we
+     map Trystero's own peer ids to our sortie ids as messages arrive. */
+  let _trysteroRoom = null;
+  let _trysteroSend = null;            // (data, targetTpeer?) => void  (null when not in a room)
+  let _currentRoomCode = null;
+  const trysteroToSortie = {};         // trystero peerId -> sortie id
+  const sortieToTrystero = {};         // sortie id -> trystero peerId
+
   const Net={
-    peers:{},       // localPeerKey -> {pc,dc}
-    routes:{},      // remotePlayerId -> localPeerKey (any incoming `from` — may be relayed)
-    directRoutes:{},// remotePlayerId -> localPeerKey (only set when lobby_join arrived directly)
+    // legacy fields kept so dormant manual-handshake code doesn't throw if referenced
+    peers:{}, routes:{}, directRoutes:{},
     onMsg:(from,m)=>handleNetMsg(from,m),
-    broadcast(m){
-      const s=JSON.stringify({from:state.me.id,...m});
-      for(const id in this.peers){
-        const dc=this.peers[id].dc;
-        if(dc&&dc.readyState==='open') try{dc.send(s);}catch(_){}
-      }
-    },
-    broadcastAs(asId,m){
-      const s=JSON.stringify({from:asId,...m});
-      for(const id in this.peers){
-        const dc=this.peers[id].dc;
-        if(dc&&dc.readyState==='open') try{dc.send(s);}catch(_){}
-      }
-    },
+    broadcast(m){ if(_trysteroSend){ try{ _trysteroSend({from:state.me.id, ...m}); }catch(_){} } },
+    broadcastAs(asId,m){ if(_trysteroSend){ try{ _trysteroSend({from:asId, ...m}); }catch(_){} } },
     sendTo(id,m){
-      const s=JSON.stringify({from:state.me.id,...m});
-      const pe=this.peers[id]; if(pe&&pe.dc&&pe.dc.readyState==='open') try{pe.dc.send(s);}catch(_){}
-    },
-    // Send a pre-formed message verbatim (preserves the original `from` across relays).
-    rawSendToPeerKey(localKey, m){
-      const pe=this.peers[localKey];
-      if(pe && pe.dc && pe.dc.readyState==='open'){
-        try { pe.dc.send(JSON.stringify(m)); return true; } catch(_){}
-      }
-      return false;
-    },
-    // Try to forward toward a target player. Prefers a known direct route; falls back
-    // to broadcasting (dedup happens via sigId on the receiving side).
-    relayToward(targetId, m, exceptKey){
-      const direct = this.routes[targetId];
-      if(direct && this.rawSendToPeerKey(direct, m)) return true;
-      let any = false;
-      for(const k in this.peers){
-        if(k===exceptKey) continue;
-        if(this.rawSendToPeerKey(k, m)) any = true;
-      }
-      return any;
+      if(!_trysteroSend) return;
+      const payload={from:state.me.id, ...m};
+      const t=sortieToTrystero[id];
+      try{ t ? _trysteroSend(payload, t) : _trysteroSend(payload); }catch(_){}
     },
   };
+
+  function myDisplayName(){
+    return state.me.name || document.getElementById('pname')?.value || ('P-'+state.me.id.slice(0,3));
+  }
+  // Targeted self-introduction so a newcomer learns who we are + gets shared state.
+  function sendIntroTo(tpeer){
+    if(!_trysteroSend) return;
+    _trysteroSend({from:state.me.id, kind:'lobby_join', name:myDisplayName()}, tpeer);
+    if(state.shipLibrary.length) _trysteroSend({from:state.me.id, kind:'library', designs:state.shipLibrary}, tpeer);
+    if(state.worldSeed) _trysteroSend({from:state.me.id, kind:'world_seed', seed:state.worldSeed}, tpeer);
+  }
+
+  async function joinTrysteroRoom(code){
+    code = (code||'').trim().toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,8);
+    if(!code){ setLobbyStatus('Enter a room code first.'); return; }
+    if(_trysteroRoom) leaveTrysteroRoom(true);
+    setLobbyStatus('Connecting to room '+code+'… (finding peers via public relays)');
+    let T;
+    try { T = await import('./trystero.bundle.js'); }
+    catch(err){ setLobbyStatus('Could not load networking library: '+(err && err.message || err)); return; }
+    let room;
+    try { room = T.joinRoom({appId:'sortie-game-v1'}, code); }
+    catch(err){ setLobbyStatus('Could not join room: '+(err && err.message || err)); return; }
+    _trysteroRoom = room;
+    _currentRoomCode = code;
+    const action = room.makeAction('g');
+    _trysteroSend = (data, target) => { target ? action.send(data, {target}) : action.send(data); };
+    action.onMessage = (data, meta) => {
+      const tpeer = (meta && typeof meta === 'object') ? meta.peerId : meta;
+      if(data && data.from && data.from !== state.me.id && tpeer){
+        trysteroToSortie[tpeer] = data.from;
+        sortieToTrystero[data.from] = tpeer;
+      }
+      try { handleNetMsg(data.from, data, tpeer); } catch(_){}
+    };
+    room.onPeerJoin = (tpeer) => {
+      sendIntroTo(tpeer);
+      if(state.mode==='lobby') setLobbyStatus('In room '+code+' — a player is connecting…');
+    };
+    room.onPeerLeave = (tpeer) => {
+      const sortie = trysteroToSortie[tpeer];
+      delete trysteroToSortie[tpeer];
+      if(sortie){
+        delete sortieToTrystero[sortie];
+        delete state.lobbyPeers[sortie];
+        delete state.peerLastSeen[sortie];
+        if(state.mode==='playing'){
+          if(isAdopterFor(sortie)) adoptOrphanedEntities(sortie);
+          chatLine('* a player left');
+        } else {
+          addLobbyChatLine('* a player left','sys');
+        }
+        refreshLobbyMP();
+      }
+    };
+    updateRoomUI();
+    refreshLobbyMP();
+    setLobbyStatus('In room '+code+' — share the code/link. Friends who join will appear below.');
+  }
+
+  function leaveTrysteroRoom(quiet){
+    try { _trysteroRoom?.leave(); } catch(_){}
+    _trysteroRoom=null; _trysteroSend=null; _currentRoomCode=null;
+    for(const k in trysteroToSortie) delete trysteroToSortie[k];
+    for(const k in sortieToTrystero) delete sortieToTrystero[k];
+    state.lobbyPeers={}; state.peerLastSeen={};
+    updateRoomUI();
+    refreshLobbyMP();
+    if(!quiet) setLobbyStatus('Left the room.');
+  }
+
+  function genRoomCode(){
+    // Avoid ambiguous chars (0/O, 1/I) so codes are easy to read aloud.
+    const chars='ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    let s=''; for(let i=0;i<5;i++) s+=chars[Math.floor(Math.random()*chars.length)];
+    return s;
+  }
+  function roomShareUrl(code){
+    return location.origin + location.pathname + '#room=' + code;
+  }
+  function updateRoomUI(){
+    const inRoom = !!_trysteroRoom;
+    const input = document.getElementById('roomCode');
+    if(input && _currentRoomCode) input.value = _currentRoomCode;
+    const shareRow = document.getElementById('roomShareRow');
+    const linkEl = document.getElementById('roomLink');
+    if(inRoom && _currentRoomCode){
+      const url = roomShareUrl(_currentRoomCode);
+      if(shareRow) shareRow.style.display='';
+      if(linkEl){ linkEl.style.display='block'; linkEl.textContent=url; }
+    } else {
+      if(shareRow) shareRow.style.display='none';
+      if(linkEl){ linkEl.style.display='none'; linkEl.textContent=''; }
+    }
+  }
+  async function createRoom(){
+    const code = genRoomCode();
+    const input = document.getElementById('roomCode'); if(input) input.value = code;
+    await joinTrysteroRoom(code);
+    // Best-effort copy the invite link so the host can paste it straight into chat.
+    try { await navigator.clipboard.writeText(roomShareUrl(code)); } catch(_){}
+  }
+  async function joinRoomFromInput(){
+    const code = document.getElementById('roomCode')?.value;
+    await joinTrysteroRoom(code);
+  }
+  async function copyRoomLink(){
+    if(!_currentRoomCode){ setLobbyStatus('Create or join a room first.'); return; }
+    try { await navigator.clipboard.writeText(roomShareUrl(_currentRoomCode)); setLobbyStatus('Invite link copied.'); }
+    catch(_){ setLobbyStatus('Copy blocked — long-press the link below to copy.'); }
+  }
 
   // Track signal sigIds seen so a flooded relay doesn't loop.
   const _seenSigs = new Set();
@@ -1596,23 +1680,9 @@ const Game=(()=>{
   // Gracefully tear down every direct connection. Remote peers see clean dc.onclose
   // events (no 30-second drop timeout) and immediately remove us from their roster.
   function leaveMesh(){
-    if(!confirm('Disconnect from the mesh? Other players will see you leave.')) return;
-    // Closing each pc triggers our own dc.onclose handlers, which clean up Net.peers
-    // and the various routing tables. Doing this in a snapshot avoids mutation issues.
-    const peerKeys = Object.keys(Net.peers);
-    for(const k of peerKeys){
-      try { Net.peers[k].pc?.close(); } catch(_){}
-    }
-    // Belt and suspenders — if any onclose didn't fire, scrub the tables ourselves.
-    Net.peers = {};
-    Net.routes = {};
-    Net.directRoutes = {};
-    state.lobbyPeers = {};
-    state.pendingPeers = {};
-    state.meshViews = {};
-    state.peerLastSeen = {};
-    if(typeof refreshLobbyMP === 'function') refreshLobbyMP();
-    setLobbyStatus('Left the mesh. Use Create Offer to start a new session.');
+    if(!_trysteroRoom){ return; }
+    if(!confirm('Leave the room? Other players will see you leave.')) return;
+    leaveTrysteroRoom(false);
   }
 
   function maybeGossipAbout(id){
@@ -5806,17 +5876,14 @@ const Game=(()=>{
   // If the page was opened via a share link, auto-accept the offer.
   async function consumeInboundHash(){
     const h = location.hash || '';
-    const m = h.match(/^#?(offer|answer)=([A-Za-z0-9_\-]+)/);
-    if(!m) return;
-    const j = await unpackSdp(m[2]);
-    if(!j) return;
-    history.replaceState(null, '', location.pathname);
-    if(m[1]==='offer'){
-      setLobbyStatus('Offer received — accepting automatically...');
-      try { await acceptOffer(j); } catch(_) { setLobbyStatus('Could not auto-accept the offer; check your connection and try again.'); }
-    } else {
-      // Legacy: an answer URL. The new flow uses the Receive Answer modal.
-      setLobbyStatus('Answer received via legacy link. Tap Receive Answer and paste the answer string instead.');
+    // New: room invite link → auto-join.
+    const rm = h.match(/^#?room=([A-Za-z0-9]+)/i);
+    if(rm){
+      const code = rm[1].toUpperCase();
+      history.replaceState(null, '', location.pathname);
+      const input = document.getElementById('roomCode'); if(input) input.value = code;
+      await joinTrysteroRoom(code);
+      return;
     }
   }
   // Restore the saved player name BEFORE we may auto-accept an inbound offer —
@@ -5938,49 +6005,26 @@ const Game=(()=>{
   }
 
   function isMeshComplete(){
-    if(Object.keys(state.pendingPeers||{}).length > 0) return false;
-    const peers = [state.me.id, ...Object.keys(state.lobbyPeers||{})];
-    if(peers.length < 2) return true;
-    for(const a of peers){
-      for(const b of peers){
-        if(a === b) continue;
-        if(!peerHasDirectTo(a, b)) return false;
-      }
-    }
+    // Trystero maintains a full mesh automatically among everyone in the room, so there's
+    // no "still forming" state to gate on — Start is always allowed.
     return true;
   }
   function refreshLobbyMP(){
     const el=document.getElementById('lobbyPlayers'); if(!el) return;
     const myName = (document.getElementById('pname')?.value || state.me.name || 'Solo');
-    const directIds = Object.keys(state.lobbyPeers);
-    const pendingIds = Object.keys(state.pendingPeers||{});
+    const peerIds = Object.keys(state.lobbyPeers);
     const parts = [`<span class="you">${esc(myName)} (you)</span>`];
-    for(const id of directIds){
+    for(const id of peerIds){
       parts.push(esc(state.lobbyPeers[id].name||id.slice(0,4)) + ' <span style="color:var(--ui-good-bright)">✓</span>');
     }
-    for(const id of pendingIds){
-      parts.push('<span class="dim">'+esc(id.slice(0,4))+' …</span>');
-    }
     let html = 'Players: ' + parts.join(', ');
-    if(directIds.length>0 || pendingIds.length>0){
-      const tag = pendingIds.length===0
-        ? '<span style="color:var(--ui-good-bright)">mesh complete</span>'
-        : '<span style="color:var(--ui-text-heat-mid)">mesh forming — '+pendingIds.length+' peer'+(pendingIds.length>1?'s':'')+' connecting…</span>';
-      html += '<br><span class="dim" style="font-size:11px">'+tag+'</span>';
+    if(_currentRoomCode){
+      html += '<br><span class="dim" style="font-size:11px">Room <b>'+esc(_currentRoomCode)+'</b> · '+(peerIds.length+1)+' connected</span>';
     }
     el.innerHTML = html;
-    // Disable Start until mesh is complete (only when there are any peers).
-    const startBtn = document.querySelector('button[onclick="Game.startSolo()"]');
-    const hasAnyPeer = directIds.length>0 || pendingIds.length>0;
-    if(startBtn){
-      const block = hasAnyPeer && !isMeshComplete();
-      startBtn.disabled = block;
-      startBtn.style.opacity = block ? '0.5' : '';
-      startBtn.title = block ? 'Waiting for all peers to mesh.' : '';
-    }
-    // Show Leave Mesh only when we actually have anyone to leave.
+    // Leave button visible only while actually in a room.
     const leaveBtn = document.getElementById('leaveMeshBtn');
-    if(leaveBtn) leaveBtn.style.display = hasAnyPeer ? '' : 'none';
+    if(leaveBtn) leaveBtn.style.display = _trysteroRoom ? '' : 'none';
   }
   function sendLobbyChat(){
     const inp=document.getElementById('lobbyChatInput'); if(!inp) return;
@@ -6169,7 +6213,7 @@ const Game=(()=>{
   boostEl.addEventListener('pointercancel',()=>{ state.boostHeld=false; boostEl.classList.remove('on'); });
 
   return {
-    startSolo,startTutorial,endTutorial,makeOffer,acceptOffer,acceptAnswer,openAnswerModal,closeAnswerModal,pasteAnswerIntoModal,submitAnswerFromModal,sdpCopy,sdpShare,leaveMesh,resetForNextRound,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,openSettings,closeSettings,startBindingCapture,resetBindings,
+    startSolo,startTutorial,endTutorial,createRoom,joinRoomFromInput,copyRoomLink,leaveMesh,resetForNextRound,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,openSettings,closeSettings,startBindingCapture,resetBindings,
     castVote,sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
     lobbySetPlace,lobbyBuilderClick,lobbyGunCfg,lobbySaveDesign,lobbyResetDesign,lobbyLoadDesign,
   };
