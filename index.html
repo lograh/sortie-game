@@ -261,6 +261,17 @@
     <h3>Recent changes <button onclick="Game.toggleChangelog()" style="float:right;font-size:11px;padding:3px 8px;min-height:0">Close</button></h3>
     <div class="body" id="changelogBody" style="font-size:12px;line-height:1.55">Loading…</div>
   </div>
+  <div id="debugPanel" style="display:none;position:fixed;left:8px;bottom:8px;width:min(560px,94vw);height:46vh;z-index:2000;background:rgba(0,0,0,0.9);border:1px solid #2af;border-radius:5px;font-family:Consolas,monospace;font-size:10px;color:#9f9;overflow:hidden;display:none;flex-direction:column">
+    <div style="padding:4px 8px;background:#114;color:#cfe;display:flex;gap:8px;align-items:center;flex:0 0 auto">
+      <b style="flex:1">Net debug</b>
+      <button onclick="Game.dbgInspect()" style="font-size:10px;padding:2px 6px;min-height:0">Inspect now</button>
+      <button onclick="Game.dbgClear()" style="font-size:10px;padding:2px 6px;min-height:0">Clear</button>
+      <button onclick="Game.dbgCopy()" style="font-size:10px;padding:2px 6px;min-height:0">Copy</button>
+      <button onclick="Game.toggleDebug()" style="font-size:10px;padding:2px 6px;min-height:0">Close</button>
+    </div>
+    <div id="debugLog" style="flex:1;overflow:auto;padding:6px 8px;white-space:pre-wrap;word-break:break-word;line-height:1.35"></div>
+  </div>
+
   <div id="vote" class="panel"><span id="voteText"></span>
     <button class="good" onclick="Game.castVote(true)">Yes</button>
     <button class="bad" onclick="Game.castVote(false)">No</button>
@@ -329,6 +340,7 @@
             <button class="bad" id="leaveMeshBtn" onclick="Game.leaveMesh()" style="display:none">Leave</button>
           </div>
           <div class="row" id="roomShareRow" style="display:none"><button onclick="Game.copyRoomLink()">Copy invite link</button></div>
+          <div class="row"><button onclick="Game.toggleDebug()" style="font-size:11px;padding:3px 8px;min-height:0">🐞 Net debug</button></div>
           <div id="roomLink" class="row dim" style="font-size:11px;word-break:break-all;display:none"></div>
           <div class="row dim" id="lobbyStatus">Solo — or create/join a room to play with friends.</div>
           <div class="row dim" style="font-size:11px">Desktop: <span class="tag">W/A/S/D</span> · <span class="tag">Space</span> fire · <span class="tag">Shift</span> boost · <span class="tag">T</span> dock · <span class="tag">M</span> map · <span class="tag">1-6</span> chat. Race: <span class="tag">B</span> super boost · <span class="tag">G</span> gas cloud.</div>
@@ -1244,6 +1256,75 @@ const Game=(()=>{
   let _getRelaySockets = null;         // Trystero export: returns {url: WebSocket} of broker sockets
   let _sawAnyPeerJoin = false;         // diagnostic: has onPeerJoin ever fired this session?
   let _lastJoinError = null;           // diagnostic: last Trystero onJoinError detail
+
+  /* -------- Net debug log -------- */
+  const _dbgBuf = [];
+  let _dbgOn = false;
+  let _dbgInspectTimer = null;
+  function _ts(){ const d = (performance.now()/1000).toFixed(1); return d+'s'; }
+  function dbg(...args){
+    const line = '['+_ts()+'] ' + args.map(a => typeof a==='string' ? a : JSON.stringify(a)).join(' ');
+    _dbgBuf.push(line);
+    if(_dbgBuf.length > 600) _dbgBuf.shift();
+    try { console.log('[netdbg]', ...args); } catch(_){}
+    if(_dbgOn){
+      const el = document.getElementById('debugLog');
+      if(el){
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+        el.textContent = _dbgBuf.join('\n');
+        if(atBottom) el.scrollTop = el.scrollHeight;
+      }
+    }
+  }
+  function toggleDebug(){
+    _dbgOn = !_dbgOn;
+    const p = document.getElementById('debugPanel');
+    if(p) p.style.display = _dbgOn ? 'flex' : 'none';
+    if(_dbgOn){
+      const el = document.getElementById('debugLog');
+      if(el){ el.textContent = _dbgBuf.join('\n'); el.scrollTop = el.scrollHeight; }
+      // While open, inspect live connections every 2s.
+      if(!_dbgInspectTimer) _dbgInspectTimer = setInterval(dbgInspect, 2000);
+    } else if(_dbgInspectTimer){
+      clearInterval(_dbgInspectTimer); _dbgInspectTimer = null;
+    }
+  }
+  function dbgClear(){ _dbgBuf.length = 0; const el=document.getElementById('debugLog'); if(el) el.textContent=''; }
+  async function dbgCopy(){
+    try { await navigator.clipboard.writeText(_dbgBuf.join('\n')); dbg('(log copied to clipboard)'); }
+    catch(_){ dbg('(copy blocked — select the text manually)'); }
+  }
+  // Pull every ICE candidate out of an SDP and summarize type + IP — this is the wire-level view.
+  function analyzeSdp(sdp){
+    if(!sdp) return 'none';
+    const cands = sdp.match(/^a=candidate:.*$/gm) || [];
+    const byType = {};
+    const ips = new Set();
+    for(const c of cands){
+      const typ = (c.match(/ typ (\w+)/) || [])[1] || '?';
+      byType[typ] = (byType[typ]||0) + 1;
+      const ip = (c.match(/^a=candidate:\S+ \d+ \S+ \d+ (\S+) /) || [])[1];
+      if(ip) ips.add(ip);
+    }
+    const cLine = (sdp.match(/c=IN IP4 (\S+)/) || [])[1] || '?';
+    return cands.length+' cand '+JSON.stringify(byType)+' ips=['+[...ips].join(', ')+'] c='+cLine;
+  }
+  // Dump the live RTCPeerConnection state for every peer Trystero has created.
+  function dbgInspect(){
+    if(!_trysteroRoom){ dbg('inspect: not in a room'); return; }
+    let peers = {};
+    try { peers = _trysteroRoom.getPeers() || {}; } catch(e){ dbg('inspect getPeers() threw', e.message); }
+    const ids = Object.keys(peers);
+    const relays = openRelayCount();
+    dbg('── inspect: '+ids.length+' RTCPeerConnection(s), relays '+(relays?relays.open+'/'+relays.total:'?')+', lobbyPeers '+Object.keys(state.lobbyPeers).length+' ──');
+    for(const id of ids){
+      const pc = peers[id];
+      if(!pc){ dbg('  '+id.slice(0,6)+': <null pc>'); continue; }
+      dbg('  '+id.slice(0,6)+': conn='+pc.connectionState+' ice='+pc.iceConnectionState+' gather='+pc.iceGatheringState+' sig='+pc.signalingState);
+      dbg('     local : '+analyzeSdp(pc.localDescription && pc.localDescription.sdp));
+      dbg('     remote: '+analyzeSdp(pc.remoteDescription && pc.remoteDescription.sdp));
+    }
+  }
   const trysteroToSortie = {};         // trystero peerId -> sortie id
   const sortieToTrystero = {};         // sortie id -> trystero peerId
 
@@ -1267,9 +1348,10 @@ const Game=(()=>{
   // Targeted self-introduction so a newcomer learns who we are + gets shared state.
   function sendIntroTo(tpeer){
     if(!_trysteroSend) return;
+    dbg('TX → '+String(tpeer).slice(0,6)+' : lobby_join name='+myDisplayName());
     _trysteroSend({from:state.me.id, kind:'lobby_join', name:myDisplayName()}, tpeer);
-    if(state.shipLibrary.length) _trysteroSend({from:state.me.id, kind:'library', designs:state.shipLibrary}, tpeer);
-    if(state.worldSeed) _trysteroSend({from:state.me.id, kind:'world_seed', seed:state.worldSeed}, tpeer);
+    if(state.shipLibrary.length){ dbg('TX → '+String(tpeer).slice(0,6)+' : library ('+state.shipLibrary.length+')'); _trysteroSend({from:state.me.id, kind:'library', designs:state.shipLibrary}, tpeer); }
+    if(state.worldSeed){ dbg('TX → '+String(tpeer).slice(0,6)+' : world_seed'); _trysteroSend({from:state.me.id, kind:'world_seed', seed:state.worldSeed}, tpeer); }
   }
 
   async function joinTrysteroRoom(code){
@@ -1278,10 +1360,12 @@ const Game=(()=>{
     if(_trysteroRoom) leaveTrysteroRoom(true);
     _sawAnyPeerJoin = false; _lastJoinError = null;
     setLobbyStatus('Connecting to room '+code+'… (finding peers via public relays)');
+    dbg('=== joinTrysteroRoom code='+code+' mySortieId='+state.me.id+' ===');
     let T;
     try { T = await import('./trystero-mqtt.js'); }
     catch(err){ setLobbyStatus('Could not load networking library: '+(err && err.message || err)); return; }
     _getRelaySockets = T.getRelaySockets || null;
+    dbg('trystero loaded; selfId='+(T.selfId||'?'));
     let room;
     try {
       // trickleIce:false → gather ALL ICE candidates (incl. the public-IP STUN-reflexive one)
@@ -1315,29 +1399,34 @@ const Game=(()=>{
       if(Array.isArray(action)) actionSend(data, target || undefined);          // tuple: send(data, targetId)
       else actionSend(data, target ? {target} : undefined);                     // object: send(data, {target})
     };
+    dbg('action API: '+(Array.isArray(action)?'tuple':'object'));
     registerRecv((data, meta) => {
       const tpeer = (meta && typeof meta === 'object') ? meta.peerId : meta;
+      // Wire-level: every game message that arrives over an open data channel.
+      const sz = (()=>{ try{ return JSON.stringify(data).length; }catch(_){ return '?'; } })();
+      dbg('RX ← '+String(tpeer).slice(0,6)+' : '+(data&&data.kind||'?')+' from='+(data&&data.from||'?')+' ('+sz+'b)');
       if(data && data.from && data.from !== state.me.id && tpeer){
         trysteroToSortie[tpeer] = data.from;
         sortieToTrystero[data.from] = tpeer;
       }
-      try { handleNetMsg(data.from, data, tpeer); } catch(err){ console.error('[sortie] handleNetMsg', err); }
+      try { handleNetMsg(data.from, data, tpeer); } catch(err){ console.error('[sortie] handleNetMsg', err); dbg('handleNetMsg threw: '+err.message); }
     });
 
     room.onPeerJoin = (tpeer) => {
-      console.log('[sortie] peer JOINED (trystero id '+tpeer+')');
+      dbg('>>> onPeerJoin '+String(tpeer).slice(0,6)+' (data channel OPEN)');
       _sawAnyPeerJoin = true;
       if(state.mode==='lobby') setLobbyStatus('Peer found — connecting data channel…');
       sendIntroTo(tpeer);
+      setTimeout(dbgInspect, 200);
     };
     // Trystero surfaces connection/relay failures here — show them so we can diagnose on-device.
     room.onJoinError = (err) => {
       const detail = (err && (err.error || err.message)) || (typeof err==='string' ? err : JSON.stringify(err));
-      console.error('[sortie] onJoinError', err);
+      dbg('!!! onJoinError: '+detail);
       _lastJoinError = detail;   // sticky so the diagnostic poll doesn't clobber it
     };
     room.onPeerLeave = (tpeer) => {
-      console.log('[sortie] peer LEFT (trystero id '+tpeer+')');
+      dbg('<<< onPeerLeave '+String(tpeer).slice(0,6));
       const sortie = trysteroToSortie[tpeer];
       delete trysteroToSortie[tpeer];
       if(sortie){
@@ -5984,6 +6073,8 @@ const Game=(()=>{
   document.getElementById('pname').addEventListener('blur', e=>{
     try{ localStorage.setItem(NAME_KEY, e.target.value); }catch(_){}
   });
+  // Open the net-debug panel automatically if the URL asks for it (#debug or #room=X&debug).
+  if(/debug/i.test(location.hash)) { try { toggleDebug(); } catch(_){} }
   consumeInboundHash();
   function setupDC(pc,dc){
     const peerId=rid();
@@ -6296,7 +6387,7 @@ const Game=(()=>{
   boostEl.addEventListener('pointercancel',()=>{ state.boostHeld=false; boostEl.classList.remove('on'); });
 
   return {
-    startSolo,startTutorial,endTutorial,createRoom,joinRoomFromInput,copyRoomLink,leaveMesh,resetForNextRound,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,openSettings,closeSettings,startBindingCapture,resetBindings,
+    startSolo,startTutorial,endTutorial,createRoom,joinRoomFromInput,copyRoomLink,leaveMesh,resetForNextRound,toggleDebug,dbgInspect,dbgClear,dbgCopy,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,openSettings,closeSettings,startBindingCapture,resetBindings,
     castVote,sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
     lobbySetPlace,lobbyBuilderClick,lobbyGunCfg,lobbySaveDesign,lobbyResetDesign,lobbyLoadDesign,
   };
