@@ -5629,7 +5629,12 @@ const Game=(()=>{
   let handshakeKind = null;     // 'host' | 'guest' | null
   let cachedOfferSDP = null;    // for guest, the offer SDP to re-use on retry
   function handshakeAlive(){ return handshakeKind && (Date.now()-handshakeStart) < HANDSHAKE_WINDOW_MS; }
-  function clearHandshake(){ handshakeKind=null; handshakeStart=0; cachedOfferSDP=null; }
+  function clearHandshake(){
+    handshakeKind=null; handshakeStart=0; cachedOfferSDP=null;
+    // Drop our hold on the pc — it's already in Net.peers via setupDC. Without this, the
+    // NEXT makeOffer would close it (and the live connection) before opening a fresh pc.
+    pendingPC = null;
+  }
 
   // Surface ICE state but stay calm during pre-connection — auto-retry handles transient failures.
   function watchPC(pc, who){
