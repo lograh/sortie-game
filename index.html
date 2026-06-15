@@ -1282,21 +1282,43 @@ const Game=(()=>{
     catch(err){ setLobbyStatus('Could not join room: '+(err && err.message || err)); return; }
     _trysteroRoom = room;
     _currentRoomCode = code;
+
+    // makeAction's return shape differs between Trystero builds (object {send,onMessage}
+    // vs tuple [send, get]). Support both so we're robust to the exact version.
     const action = room.makeAction('g');
-    _trysteroSend = (data, target) => { target ? action.send(data, {target}) : action.send(data); };
-    action.onMessage = (data, meta) => {
+    let actionSend, registerRecv;
+    if(Array.isArray(action)){
+      actionSend = action[0];
+      registerRecv = action[1];
+      console.log('[sortie] Trystero makeAction: tuple API');
+    } else if(action && typeof action.send === 'function'){
+      actionSend = (data, opts) => action.send(data, opts);
+      registerRecv = (cb) => { action.onMessage = cb; };
+      console.log('[sortie] Trystero makeAction: object API');
+    } else {
+      setLobbyStatus('Networking error: unrecognized Trystero action API.');
+      console.error('[sortie] makeAction returned unexpected shape:', action);
+      return;
+    }
+    _trysteroSend = (data, target) => {
+      if(Array.isArray(action)) actionSend(data, target || undefined);          // tuple: send(data, targetId)
+      else actionSend(data, target ? {target} : undefined);                     // object: send(data, {target})
+    };
+    registerRecv((data, meta) => {
       const tpeer = (meta && typeof meta === 'object') ? meta.peerId : meta;
       if(data && data.from && data.from !== state.me.id && tpeer){
         trysteroToSortie[tpeer] = data.from;
         sortieToTrystero[data.from] = tpeer;
       }
-      try { handleNetMsg(data.from, data, tpeer); } catch(_){}
-    };
+      try { handleNetMsg(data.from, data, tpeer); } catch(err){ console.error('[sortie] handleNetMsg', err); }
+    });
+
     room.onPeerJoin = (tpeer) => {
+      console.log('[sortie] peer JOINED (trystero id '+tpeer+')');
       sendIntroTo(tpeer);
-      if(state.mode==='lobby') setLobbyStatus('In room '+code+' — a player is connecting…');
     };
     room.onPeerLeave = (tpeer) => {
+      console.log('[sortie] peer LEFT (trystero id '+tpeer+')');
       const sortie = trysteroToSortie[tpeer];
       delete trysteroToSortie[tpeer];
       if(sortie){
@@ -1314,10 +1336,33 @@ const Game=(()=>{
     };
     updateRoomUI();
     refreshLobbyMP();
-    setLobbyStatus('In room '+code+' — share the code/link. Friends who join will appear below.');
+    startRoomDiag();
+    setLobbyStatus('In room '+code+' — searching for peers via relays…');
   }
 
+  // Live diagnostic: shows raw Trystero connections vs handshake-completed players.
+  // Lets us tell apart "relays aren't connecting peers" (raw stays 0) from
+  // "peers connect but messages don't flow" (raw > 0 but players stay at 1).
+  let _roomDiagTimer = null;
+  function startRoomDiag(){
+    stopRoomDiag();
+    _roomDiagTimer = setInterval(() => {
+      if(!_trysteroRoom){ stopRoomDiag(); return; }
+      if(state.mode !== 'lobby') return;   // in-game status uses the HUD, not lobbyStatus
+      let raw = 0;
+      try { raw = Object.keys(_trysteroRoom.getPeers() || {}).length; } catch(_){}
+      const known = Object.keys(state.lobbyPeers).length;
+      let msg = 'Room '+_currentRoomCode+' — ';
+      if(raw === 0) msg += 'searching for peers via relays… (can take 10–30s)';
+      else if(raw > known) msg += raw+' connected, '+(raw-known)+' still handshaking…';
+      else msg += (raw)+' peer'+(raw===1?'':'s')+' connected';
+      setLobbyStatus(msg);
+    }, 2000);
+  }
+  function stopRoomDiag(){ if(_roomDiagTimer){ clearInterval(_roomDiagTimer); _roomDiagTimer = null; } }
+
   function leaveTrysteroRoom(quiet){
+    stopRoomDiag();
     try { _trysteroRoom?.leave(); } catch(_){}
     _trysteroRoom=null; _trysteroSend=null; _currentRoomCode=null;
     for(const k in trysteroToSortie) delete trysteroToSortie[k];
