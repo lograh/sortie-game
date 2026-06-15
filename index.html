@@ -1340,8 +1340,29 @@ const Game=(()=>{
   }
   // Dump the live RTCPeerConnection state for every peer Trystero has created.
   const _WS_STATE = ['CONNECTING','OPEN','CLOSING','CLOSED'];
+  // Tap each broker WebSocket to count raw MQTT frames in/out — this is the actual
+  // "anyone there?" presence + signaling traffic, below the game's message layer.
+  const _wsStats = new WeakMap();
+  function _frameLen(d){ try { return d&&(d.byteLength ?? d.length ?? d.size) || 0; } catch(_){ return 0; } }
+  function instrumentRelays(){
+    if(!_getRelaySockets) return;
+    let socks = {};
+    try { socks = _getRelaySockets() || {}; } catch(_){ return; }
+    for(const url in socks){
+      const ws = socks[url];
+      if(!ws || _wsStats.has(ws)) continue;
+      const stats = { tx:0, txB:0, rx:0, rxB:0 };
+      _wsStats.set(ws, stats);
+      try {
+        const orig = ws.send.bind(ws);
+        ws.send = (data) => { stats.tx++; stats.txB += _frameLen(data); return orig(data); };
+        ws.addEventListener('message', ev => { stats.rx++; stats.rxB += _frameLen(ev.data); });
+      } catch(_){}
+    }
+  }
   function dbgRelays(){
     if(!_getRelaySockets){ dbg('relays: getRelaySockets unavailable'); return; }
+    instrumentRelays();
     let socks = {};
     try { socks = _getRelaySockets() || {}; } catch(e){ dbg('relays: getRelaySockets threw '+e.message); return; }
     const urls = Object.keys(socks);
@@ -1349,7 +1370,9 @@ const Game=(()=>{
     for(const url of urls){
       const ws = socks[url];
       const st = ws ? (_WS_STATE[ws.readyState] ?? ws.readyState) : 'null';
-      dbg('   '+st.padEnd(10)+' '+url);
+      const s = ws && _wsStats.get(ws);
+      const traffic = s ? (' tx='+s.tx+'('+s.txB+'b) rx='+s.rx+'('+s.rxB+'b)') : '';
+      dbg('   '+st.padEnd(8)+traffic.padEnd(30)+' '+url.replace(/^wss:\/\//,''));
     }
   }
   function dbgInspect(){
@@ -1487,6 +1510,11 @@ const Game=(()=>{
     updateRoomUI();
     refreshLobbyMP();
     startRoomDiag();
+    // Tap the broker sockets early so we capture the very first presence frames.
+    instrumentRelays();
+    setTimeout(instrumentRelays, 500);
+    setTimeout(instrumentRelays, 1500);
+    setTimeout(instrumentRelays, 3000);
     setLobbyStatus('In room '+code+' — searching for peers via relays…');
   }
 
