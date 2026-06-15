@@ -261,10 +261,10 @@
     <h3>Recent changes <button onclick="Game.toggleChangelog()" style="float:right;font-size:11px;padding:3px 8px;min-height:0">Close</button></h3>
     <div class="body" id="changelogBody" style="font-size:12px;line-height:1.55">Loading…</div>
   </div>
-  <div id="debugPanel" style="display:none;position:fixed;left:8px;bottom:8px;width:min(560px,94vw);height:46vh;z-index:2000;background:rgba(0,0,0,0.9);border:1px solid #2af;border-radius:5px;font-family:Consolas,monospace;font-size:10px;color:#9f9;overflow:hidden;display:none;flex-direction:column">
-    <div style="padding:4px 8px;background:#114;color:#cfe;display:flex;gap:8px;align-items:center;flex:0 0 auto">
-      <b style="flex:1">Net debug</b>
-      <button onclick="Game.dbgInspect()" style="font-size:10px;padding:2px 6px;min-height:0">Inspect now</button>
+  <div id="debugPanel" style="display:none;position:fixed;right:8px;top:8px;width:min(560px,94vw);height:46vh;z-index:2000;background:rgba(0,0,0,0.9);border:1px solid #2af;border-radius:5px;font-family:Consolas,monospace;font-size:10px;color:#9f9;overflow:hidden;flex-direction:column">
+    <div id="debugHeader" style="padding:4px 8px;background:#114;color:#cfe;display:flex;gap:8px;align-items:center;flex:0 0 auto;cursor:move;touch-action:none">
+      <b style="flex:1">Net debug ⠿</b>
+      <button onclick="Game.dbgInspect()" style="font-size:10px;padding:2px 6px;min-height:0">Inspect</button>
       <button onclick="Game.dbgClear()" style="font-size:10px;padding:2px 6px;min-height:0">Clear</button>
       <button onclick="Game.dbgCopy()" style="font-size:10px;padding:2px 6px;min-height:0">Copy</button>
       <button onclick="Game.toggleDebug()" style="font-size:10px;padding:2px 6px;min-height:0">Close</button>
@@ -1276,10 +1276,39 @@ const Game=(()=>{
       }
     }
   }
+  let _dbgDragWired = false;
+  function wireDebugDrag(){
+    if(_dbgDragWired) return;
+    const panel = document.getElementById('debugPanel');
+    const handle = document.getElementById('debugHeader');
+    if(!panel || !handle) return;
+    _dbgDragWired = true;
+    let pid=null, ox=0, oy=0;
+    handle.addEventListener('pointerdown', e=>{
+      if(e.target.tagName==='BUTTON') return;       // let header buttons work
+      pid=e.pointerId;
+      const r=panel.getBoundingClientRect();
+      // Switch to left/top anchoring so dragging is straightforward.
+      panel.style.right='auto'; panel.style.bottom='auto';
+      panel.style.left=r.left+'px'; panel.style.top=r.top+'px';
+      ox=e.clientX-r.left; oy=e.clientY-r.top;
+      try{ handle.setPointerCapture(pid); }catch(_){}
+      e.preventDefault();
+    });
+    handle.addEventListener('pointermove', e=>{
+      if(e.pointerId!==pid) return;
+      panel.style.left=Math.max(0, Math.min(window.innerWidth-60, e.clientX-ox))+'px';
+      panel.style.top =Math.max(0, Math.min(window.innerHeight-30, e.clientY-oy))+'px';
+    });
+    const end=e=>{ if(e.pointerId===pid){ try{ handle.releasePointerCapture(pid); }catch(_){} pid=null; } };
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+  }
   function toggleDebug(){
     _dbgOn = !_dbgOn;
     const p = document.getElementById('debugPanel');
     if(p) p.style.display = _dbgOn ? 'flex' : 'none';
+    if(_dbgOn) wireDebugDrag();
     if(_dbgOn){
       const el = document.getElementById('debugLog');
       if(el){ el.textContent = _dbgBuf.join('\n'); el.scrollTop = el.scrollHeight; }
@@ -1310,13 +1339,26 @@ const Game=(()=>{
     return cands.length+' cand '+JSON.stringify(byType)+' ips=['+[...ips].join(', ')+'] c='+cLine;
   }
   // Dump the live RTCPeerConnection state for every peer Trystero has created.
+  const _WS_STATE = ['CONNECTING','OPEN','CLOSING','CLOSED'];
+  function dbgRelays(){
+    if(!_getRelaySockets){ dbg('relays: getRelaySockets unavailable'); return; }
+    let socks = {};
+    try { socks = _getRelaySockets() || {}; } catch(e){ dbg('relays: getRelaySockets threw '+e.message); return; }
+    const urls = Object.keys(socks);
+    dbg('relays ('+urls.length+'):');
+    for(const url of urls){
+      const ws = socks[url];
+      const st = ws ? (_WS_STATE[ws.readyState] ?? ws.readyState) : 'null';
+      dbg('   '+st.padEnd(10)+' '+url);
+    }
+  }
   function dbgInspect(){
     if(!_trysteroRoom){ dbg('inspect: not in a room'); return; }
     let peers = {};
     try { peers = _trysteroRoom.getPeers() || {}; } catch(e){ dbg('inspect getPeers() threw', e.message); }
     const ids = Object.keys(peers);
-    const relays = openRelayCount();
-    dbg('── inspect: '+ids.length+' RTCPeerConnection(s), relays '+(relays?relays.open+'/'+relays.total:'?')+', lobbyPeers '+Object.keys(state.lobbyPeers).length+' ──');
+    dbg('── inspect: '+ids.length+' RTCPeerConnection(s), lobbyPeers '+Object.keys(state.lobbyPeers).length+' ──');
+    dbgRelays();
     for(const id of ids){
       const pc = peers[id];
       if(!pc){ dbg('  '+id.slice(0,6)+': <null pc>'); continue; }
