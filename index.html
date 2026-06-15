@@ -1319,6 +1319,56 @@ const Game=(()=>{
     }
   }
   function dbgClear(){ _dbgBuf.length = 0; const el=document.getElementById('debugLog'); if(el) el.textContent=''; }
+
+  // Capture EVERY RTCPeerConnection Trystero creates (even ones that never connect, which
+  // getPeers() hides) and log their full ICE/SDP lifecycle. This is the real WebRTC wire view.
+  const _allPCs = [];
+  function _sdpCandLines(sdp){
+    if(!sdp) return [];
+    return (sdp.match(/^a=candidate:.*$/gm) || []).map(c => {
+      const typ = (c.match(/ typ (\w+)/) || [])[1] || '?';
+      const ip = (c.match(/^a=candidate:\S+ \d+ (\S+) \d+ (\S+) (\d+)/) || []);
+      return '['+typ+'] '+(ip[2]||'?')+':'+(ip[3]||'?')+' '+(ip[1]||'');
+    });
+  }
+  (function patchRTC(){
+    const Native = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+    if(!Native || Native.__sortiePatched) return;
+    const Patched = function(cfg){
+      const pc = new Native(cfg);
+      _allPCs.push(pc);
+      const tag = 'pc#'+_allPCs.length;
+      dbg(tag+' created · iceServers='+((cfg&&cfg.iceServers||[]).map(s=>s.urls).join(' | ')||'none')+' policy='+((cfg&&cfg.iceTransportPolicy)||'all'));
+      pc.addEventListener('icecandidate', e=>{
+        if(e.candidate){
+          const c = e.candidate.candidate;
+          const typ = (c.match(/ typ (\w+)/)||[])[1]||'?';
+          const ip = (c.match(/^candidate:\S+ \d+ \S+ \d+ (\S+) /)||[])[1]||'?';
+          dbg(tag+' local ICE ['+typ+'] '+ip);
+        } else dbg(tag+' local ICE gathering complete');
+      });
+      pc.addEventListener('iceconnectionstatechange', ()=> dbg(tag+' iceConnectionState → '+pc.iceConnectionState));
+      pc.addEventListener('icegatheringstatechange', ()=> dbg(tag+' iceGatheringState → '+pc.iceGatheringState));
+      pc.addEventListener('connectionstatechange', ()=> dbg(tag+' connectionState → '+pc.connectionState));
+      const _sld = pc.setLocalDescription.bind(pc);
+      pc.setLocalDescription = (d)=>{ try{ dbg(tag+' setLocalDescription '+(d&&d.type)); }catch(_){} return _sld(d); };
+      const _srd = pc.setRemoteDescription.bind(pc);
+      pc.setRemoteDescription = (d)=>{
+        try{
+          dbg(tag+' setRemoteDescription '+(d&&d.type)+' — remote candidates:');
+          for(const l of _sdpCandLines(d&&d.sdp)) dbg(tag+'   remote '+l);
+          if(!(d&&d.sdp&&/a=candidate:/.test(d.sdp))) dbg(tag+'   (remote SDP has NO candidates!)');
+        }catch(_){}
+        return _srd(d);
+      };
+      return pc;
+    };
+    Patched.prototype = Native.prototype;
+    Patched.__sortiePatched = true;
+    try { window.RTCPeerConnection = Patched; } catch(_){}
+    try { if(window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = Patched; } catch(_){}
+    dbg('RTCPeerConnection patched for logging');
+  })();
   async function dbgCopy(){
     try { await navigator.clipboard.writeText(_dbgBuf.join('\n')); dbg('(log copied to clipboard)'); }
     catch(_){ dbg('(copy blocked — select the text manually)'); }
@@ -1380,7 +1430,15 @@ const Game=(()=>{
     let peers = {};
     try { peers = _trysteroRoom.getPeers() || {}; } catch(e){ dbg('inspect getPeers() threw', e.message); }
     const ids = Object.keys(peers);
-    dbg('── inspect: '+ids.length+' RTCPeerConnection(s), lobbyPeers '+Object.keys(state.lobbyPeers).length+' ──');
+    dbg('── inspect: getPeers()='+ids.length+', capturedPCs='+_allPCs.length+', lobbyPeers '+Object.keys(state.lobbyPeers).length+' ──');
+    // Show EVERY captured pc (getPeers hides ones that never connected).
+    _allPCs.forEach((pc, i) => {
+      try {
+        dbg('  pc#'+(i+1)+': conn='+pc.connectionState+' ice='+pc.iceConnectionState+' gather='+pc.iceGatheringState+' sig='+pc.signalingState);
+        dbg('     local : '+analyzeSdp(pc.localDescription && pc.localDescription.sdp));
+        dbg('     remote: '+analyzeSdp(pc.remoteDescription && pc.remoteDescription.sdp));
+      } catch(_){}
+    });
     dbgRelays();
     for(const id of ids){
       const pc = peers[id];
