@@ -1482,6 +1482,7 @@ const Game=(()=>{
     if(!code){ setLobbyStatus('Enter a room code first.'); return; }
     if(_trysteroRoom) leaveTrysteroRoom(true);
     _sawAnyPeerJoin = false; _lastJoinError = null;
+    _allPCs.length = 0;   // fresh capture per join so the debug log isn't polluted by prior attempts
     setLobbyStatus('Connecting to room '+code+'… (finding peers via public relays)');
     dbg('=== joinTrysteroRoom code='+code+' mySortieId='+state.me.id+' ===');
     let T;
@@ -1491,15 +1492,14 @@ const Game=(()=>{
     dbg('trystero loaded; selfId='+(T.selfId||'?'));
     let room;
     try {
-      // - relayConfig.urls: pin EVERY client to the same two reliable brokers. The default
-      //   picks a random 4-of-5 subset per client, so two clients can land on broker sets that
-      //   don't cross-deliver presence → they never discover each other. Pinning a shared pair
-      //   (both proven to relay) guarantees overlap so rendezvous actually happens.
-      // - trickleIce:false: bake ALL ICE candidates (incl. the public-IP STUN-reflexive one) into
-      //   the SDP up front instead of trickling them over the relay where they can be dropped.
+      // relayConfig.urls: pin EVERY client to the same two reliable brokers. The default picks
+      // a random 4-of-5 subset per client, so two clients can land on broker sets that don't
+      // cross-deliver presence → they never discover each other. Pinning a shared pair (both
+      // proven to relay) guarantees overlap so rendezvous actually happens.
+      // (trickle ICE left at default: with reliable pinned brokers, candidates stream in fast
+      //  and connections complete quickly — non-trickle caused a connect-timeout retry storm.)
       room = T.joinRoom({
         appId:'sortie-game-v1',
-        trickleIce:false,
         relayConfig:{ urls:['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'] },
       }, code);
     }
