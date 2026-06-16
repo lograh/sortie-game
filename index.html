@@ -2419,6 +2419,7 @@ const Game=(()=>{
     state.roundEnded=false;
     state.raceFirstFinishTick=0;
     state.raceFinishOrder=[];
+    state.explored = new Set();   // fresh minimap fog for the new round (also covers start_game joiners)
     // Soccer mode: stand up the ball + goals immediately.
     state.ball = null; state.goals = []; state.teamScores = {};
     if(state.gameMode==='soccer') initSoccer();
@@ -3028,13 +3029,23 @@ const Game=(()=>{
     state.ball = { x:0, y:0, vx:0, vy:0, lastTouchTeam:0, lastTouchId:null, lastTouchAt:0 };
     state.teamScores = {};
     state.goals = [];
-    const teams = soccerActiveTeams();
-    for(let i=0;i<teams.length;i++){
-      const ang = (i/teams.length) * Math.PI * 2;
-      const r = WORLD * 0.85;
-      state.goals.push({ team:teams[i], x:Math.cos(ang)*r, y:Math.sin(ang)*r, r:GOAL_RADIUS });
-      state.teamScores[teams[i]] = 0;
-    }
+    syncSoccerTeams();
+  }
+  // Teams aren't fully known at round start — remote players' teams only arrive a few ticks
+  // later via their 'state' broadcasts. So (re)build goals + score slots as new teams appear.
+  // Additive only (a team that drops keeps its goal), and deterministic: every client computes
+  // the same evenly-spread layout from the same sorted team set, so they stay in sync.
+  function syncSoccerTeams(){
+    const active = soccerActiveTeams();
+    const have = new Set(state.goals.map(g=>g.team));
+    if(active.every(t=>have.has(t))) return;   // nothing new
+    const all = [...new Set([...have, ...active])].sort((a,b)=>a-b);
+    const r = WORLD * 0.85;
+    state.goals = all.map((t,i)=>{
+      const ang = (i/all.length) * Math.PI * 2;
+      return { team:t, x:Math.cos(ang)*r, y:Math.sin(ang)*r, r:GOAL_RADIUS };
+    });
+    for(const t of all) if(state.teamScores[t]===undefined) state.teamScores[t] = 0;
   }
   function resetBallToCenter(){
     if(!state.ball) return;
@@ -3045,6 +3056,7 @@ const Game=(()=>{
   }
   function tickSoccer(){
     if(state.gameMode !== 'soccer' || !state.ball || state.roundEnded) return;
+    syncSoccerTeams();   // pick up teams whose players' state arrived after round start
     const ball = state.ball;
     // Integrate
     ball.x += ball.vx; ball.y += ball.vy;
@@ -5667,6 +5679,7 @@ const Game=(()=>{
     state.racePeersReady = new Set();
     state.kingActive = false; state.piratesKilled = 0;
     state.ball = null; state.goals = []; state.teamScores = {};
+    state.explored = new Set();   // clear minimap fog so the next round starts dark
     state.worldSeed = 0;
     state.pendingStart = null;
     state.killGoal = 0; state.roundEndTick = 0;
