@@ -337,6 +337,7 @@
             <button class="bad" id="leaveMeshBtn" onclick="Game.leaveMesh()" style="display:none">Leave</button>
           </div>
           <div class="row" id="roomShareRow" style="display:none"><button onclick="Game.copyRoomLink()">Copy invite link</button></div>
+          <div class="row"><button id="voiceBtnLobby" onclick="Game.toggleVoice()">🎙 Voice: Off</button> <span class="dim" style="font-size:11px">Talk to others in the room (adjust volume in ⚙ Settings)</span></div>
           <div class="row"><button onclick="Game.toggleDebug()" style="font-size:11px;padding:3px 8px;min-height:0">🐞 Net debug</button></div>
           <div id="roomLink" class="row dim" style="font-size:11px;word-break:break-all;display:none"></div>
           <div class="row dim" id="lobbyStatus">Solo — or create/join a room to play with friends.</div>
@@ -418,6 +419,12 @@
       <input type="range" id="setVolSfx" min="0" max="1" step="0.05" style="flex:1">
       <span id="setVolSfxVal" style="min-width:36px;text-align:right">100%</span>
     </div>
+    <div class="row">Voice chat
+      <input type="range" id="setVolChat" min="0" max="1" step="0.05" style="flex:1">
+      <span id="setVolChatVal" style="min-width:36px;text-align:right">100%</span>
+    </div>
+    <div class="row"><button id="voiceBtnSettings" onclick="Game.toggleVoice()">Turn voice on</button>
+      <span class="dim" style="font-size:11px;margin-left:8px">Mic on/off for the current room.</span></div>
     <h4 style="color:var(--ui-text-highlight);margin:14px 0 6px 0;border-bottom:1px solid var(--ui-divider);padding-bottom:4px">Touch joystick</h4>
     <div class="row">Max radius
       <input type="range" id="setTouchRadius" min="30" max="120" step="5" style="flex:1">
@@ -1092,7 +1099,7 @@ const Game=(()=>{
     KEY: 'sortie_settings_v1',
     data: {
       video: { colorblind:'off', brightness:1.0, bgStars:true, zoom:1.0 },
-      audio: { master:1.0, music:1.0, sfx:1.0 },
+      audio: { master:1.0, music:1.0, sfx:1.0, chat:1.0 },
       touch: { maxRadius:60, thrustThreshold:0.55 },
       bindings: {
         thrust: ['KeyW','ArrowUp'],
@@ -1618,8 +1625,12 @@ const Game=(()=>{
       _sawAnyPeerJoin = true;
       if(state.mode==='lobby') setLobbyStatus('Peer found — connecting data channel…');
       sendIntroTo(tpeer);
+      // If our mic is live, send our voice to this newly-joined peer too.
+      if(_voiceOn && _micStream){ try { room.addStream(_micStream, {target:tpeer}); } catch(_){} }
       setTimeout(dbgInspect, 200);
     };
+    // Incoming voice from a peer → play it through a per-peer <audio> sink.
+    room.onPeerStream = (stream, tpeer) => attachPeerStream(stream, tpeer);
     // Trystero surfaces connection/relay failures here — show them so we can diagnose on-device.
     room.onJoinError = (err) => {
       const detail = (err && (err.error || err.message)) || (typeof err==='string' ? err : JSON.stringify(err));
@@ -1628,6 +1639,7 @@ const Game=(()=>{
     };
     room.onPeerLeave = (tpeer) => {
       dbg('<<< onPeerLeave '+String(tpeer).slice(0,6));
+      dropPeerStream(tpeer);   // stop playing their voice
       const sortie = trysteroToSortie[tpeer];
       delete trysteroToSortie[tpeer];
       if(sortie){
@@ -1696,6 +1708,7 @@ const Game=(()=>{
 
   function leaveTrysteroRoom(quiet){
     stopRoomDiag();
+    disableVoice(true);   // release mic + tear down peer audio before dropping the room
     try { _trysteroRoom?.leave(); } catch(_){}
     _trysteroRoom=null; _trysteroSend=null; _currentRoomCode=null; _getRelaySockets=null;
     for(const k in trysteroToSortie) delete trysteroToSortie[k];
@@ -1705,6 +1718,70 @@ const Game=(()=>{
     refreshLobbyMP();
     if(!quiet) setLobbyStatus('Left the room.');
   }
+
+  /* -------- Voice chat (WebRTC audio over the same Trystero peer connections) -------- */
+  let _micStream = null;                 // our local mic MediaStream (null = voice off)
+  let _voiceOn = false;
+  const _peerAudioEls = {};              // trysteroPeerId -> <audio> playing that peer's voice
+  function voiceVolume(){ return Math.max(0, Math.min(1, (Settings.data.audio && Settings.data.audio.chat!=null) ? Settings.data.audio.chat : 1)); }
+  function applyVoiceVolume(){ const v=voiceVolume(); for(const k in _peerAudioEls){ try{ _peerAudioEls[k].volume=v; }catch(_){} } }
+  // Attach (or refresh) the <audio> sink for a peer's incoming voice stream.
+  function attachPeerStream(stream, tpeer){
+    let el = _peerAudioEls[tpeer];
+    if(!el){ el = new Audio(); el.autoplay = true; _peerAudioEls[tpeer] = el; }
+    el.srcObject = stream;
+    el.volume = voiceVolume();
+    el.play().catch(()=>{});   // the enable click is a user gesture, so autoplay should pass
+    dbg('voice: receiving stream from '+String(tpeer).slice(0,6));
+  }
+  function dropPeerStream(tpeer){
+    const el = _peerAudioEls[tpeer];
+    if(el){ try{ el.pause(); el.srcObject=null; }catch(_){} delete _peerAudioEls[tpeer]; }
+  }
+  async function enableVoice(){
+    if(_voiceOn) return;
+    if(!_trysteroRoom){ setLobbyStatus('Join a room first, then turn on voice chat.'); return; }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
+    } catch(err){
+      setLobbyStatus('Microphone unavailable: '+((err&&err.message)||err));
+      addLobbyChatLine('* couldn\'t turn on voice — mic permission denied or no device','sys');
+      return;
+    }
+    _micStream = stream; _voiceOn = true;
+    try { _trysteroRoom.addStream(stream); } catch(e){ dbg('voice addStream threw: '+((e&&e.message)||e)); }
+    updateVoiceUI();
+    addLobbyChatLine('* voice chat ON — others in the room can hear you','sys');
+  }
+  // quiet=true when called from teardown (no chat line / status).
+  function disableVoice(quiet){
+    if(!_voiceOn && !_micStream){ if(!quiet) updateVoiceUI(); return; }
+    _voiceOn = false;
+    if(_micStream){
+      try { _trysteroRoom && _trysteroRoom.removeStream(_micStream); } catch(_){}
+      _micStream.getTracks().forEach(t=>{ try{ t.stop(); }catch(_){} });
+      _micStream = null;
+    }
+    for(const k in _peerAudioEls) dropPeerStream(k);
+    updateVoiceUI();
+    if(!quiet) addLobbyChatLine('* voice chat off','sys');
+  }
+  function toggleVoice(){ _voiceOn ? disableVoice(false) : enableVoice(); }
+  // Reflect voice state on both the lobby button and the settings button.
+  function updateVoiceUI(){
+    const label = _voiceOn ? '🎤 Voice: On' : '🎙 Voice: Off';
+    const lb = document.getElementById('voiceBtnLobby');
+    if(lb){ lb.textContent = label; lb.classList.toggle('good', _voiceOn); }
+    const sb = document.getElementById('voiceBtnSettings');
+    if(sb){ sb.textContent = _voiceOn ? 'Turn voice off' : 'Turn voice on'; }
+  }
+  // Autoplay safety net: a pure listener (mic off) may have their incoming voice blocked
+  // until they interact with the page. Any click retries any paused peer audio. No-op once
+  // everything is playing.
+  document.addEventListener('click', ()=>{
+    for(const k in _peerAudioEls){ const el=_peerAudioEls[k]; if(el && el.paused){ el.play().catch(()=>{}); } }
+  }, true);
 
   function genRoomCode(){
     // Avoid ambiguous chars (0/O, 1/I) so codes are easy to read aloud.
@@ -5623,6 +5700,10 @@ const Game=(()=>{
     document.getElementById('setVolMasterVal').textContent = Math.round(Settings.data.audio.master*100)+'%';
     document.getElementById('setVolMusicVal').textContent  = Math.round(Settings.data.audio.music*100)+'%';
     document.getElementById('setVolSfxVal').textContent    = Math.round(Settings.data.audio.sfx*100)+'%';
+    const chatV = (Settings.data.audio.chat!=null) ? Settings.data.audio.chat : 1;
+    document.getElementById('setVolChat').value = chatV;
+    document.getElementById('setVolChatVal').textContent = Math.round(chatV*100)+'%';
+    if(typeof updateVoiceUI==='function') updateVoiceUI();
     renderSettingsBindings();
     // "Leave game" only makes sense mid-round.
     const inRound = state.mode==='playing';
@@ -5707,6 +5788,11 @@ const Game=(()=>{
       const v = parseFloat(e.target.value); Settings.data.audio.sfx = v;
       $('setVolSfxVal').textContent = Math.round(v*100)+'%';
       Settings.applyAudio(); Settings.save();
+    });
+    $('setVolChat')?.addEventListener('input', e => {
+      const v = parseFloat(e.target.value); Settings.data.audio.chat = v;
+      $('setVolChatVal').textContent = Math.round(v*100)+'%';
+      applyVoiceVolume(); Settings.save();
     });
   }
   wireSettingsInputs();
@@ -6151,7 +6237,7 @@ const Game=(()=>{
   boostEl.addEventListener('pointercancel',()=>{ state.boostHeld=false; boostEl.classList.remove('on'); });
 
   return {
-    startSolo,startTutorial,endTutorial,createRoom,joinRoomFromInput,copyRoomLink,leaveMesh,resetForNextRound,toggleDebug,dbgInspect,dbgClear,dbgCopy,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,openSettings,closeSettings,leaveGame,startBindingCapture,resetBindings,
+    startSolo,startTutorial,endTutorial,createRoom,joinRoomFromInput,copyRoomLink,leaveMesh,resetForNextRound,toggleDebug,dbgInspect,dbgClear,dbgCopy,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,openSettings,closeSettings,leaveGame,toggleVoice,startBindingCapture,resetBindings,
     sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
     lobbySetPlace,lobbyBuilderClick,lobbyGunCfg,lobbySaveDesign,lobbyResetDesign,lobbyLoadDesign,
   };
