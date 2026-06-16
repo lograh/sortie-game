@@ -807,7 +807,6 @@ const Game=(()=>{
     mode:'lobby', // lobby|playing
     me:{id:_myId,name:'',team:0,score:0,creds:50,materials:{iron:0,silicon:0,carbon:0,rare:0}},
     peerLastSeen:{},  // playerId → performance.now() of last received message (for ragequit detection)
-    meshViews:{},     // playerId → {direct:[{id,ago}], receivedAt} — others' reports of their direct links
     players:{}, // id->player
     asteroids:[],
     bullets:[],
@@ -827,7 +826,6 @@ const Game=(()=>{
     racePeersReady:new Set(),
     pingTo:{},        // playerId → last measured RTT in ms
     lobbyPeers:{},    // peerId → {name} for the pre-game lobby player list (direct dc up)
-    pendingPeers:{},  // peerId → {} for peers we've heard of but haven't directly connected yet
     raceExpectedReadies:0,
     raceWaitStartTick:0,
     keys:{},
@@ -1516,8 +1514,9 @@ const Game=(()=>{
   const sortieToTrystero = {};         // sortie id -> trystero peerId
 
   const Net={
-    // legacy fields kept so dormant manual-handshake code doesn't throw if referenced
-    peers:{}, routes:{}, directRoutes:{},
+    // directRoutes: sortieId → Trystero peerId, populated on each lobby_join. Drives the
+    // mesh-view/gossip features. (The old manual-handshake `peers`/`routes` maps are gone.)
+    directRoutes:{},
     onMsg:(from,m)=>handleNetMsg(from,m),
     broadcast(m){ if(_trysteroSend){ try{ _trysteroSend({from:state.me.id, ...m}); }catch(_){} } },
     broadcastAs(asId,m){ if(_trysteroSend){ try{ _trysteroSend({from:asId, ...m}); }catch(_){} } },
@@ -1532,19 +1531,13 @@ const Game=(()=>{
   function myDisplayName(){
     return state.me.name || document.getElementById('pname')?.value || ('P-'+state.me.id.slice(0,3));
   }
-  // How many human peers we have — works under BOTH the legacy manual-handshake path
-  // (Net.peers) and Trystero (state.lobbyPeers, populated by lobby_join introductions).
-  // The legacy Net.peers map is always empty under Trystero, so any feature that counted
-  // it directly silently saw "0 peers". Pass {live:true} to exclude one-way/stale peers
-  // we can't actually hear back from (so we don't wait on a dead link).
+  // How many human peers we have (Trystero state.lobbyPeers, populated by lobby_join
+  // introductions). Pass {live:true} to exclude one-way/stale peers we can't hear back
+  // from, so we don't wait on a dead link.
   function humanPeerCount(opts){
-    const legacy = Object.keys(Net.peers).length;
-    let trystero = 0;
-    if(_trysteroRoom){
-      const ids = Object.keys(state.lobbyPeers);
-      trystero = (opts && opts.live) ? ids.filter(id => !state.lobbyPeers[id]._stale).length : ids.length;
-    }
-    return Math.max(legacy, trystero);
+    if(!_trysteroRoom) return 0;
+    const ids = Object.keys(state.lobbyPeers);
+    return (opts && opts.live) ? ids.filter(id => !state.lobbyPeers[id]._stale).length : ids.length;
   }
   // Targeted self-introduction so a newcomer learns who we are + gets shared state.
   function sendIntroTo(tpeer){
@@ -1753,16 +1746,8 @@ const Game=(()=>{
     catch(_){ setLobbyStatus('Copy blocked — long-press the link below to copy.'); }
   }
 
-  // Track signal sigIds seen so a flooded relay doesn't loop.
-  const _seenSigs = new Set();
-  // Pending auto-handshake pcs, keyed by sigId so the answer can find its pc.
-  const autoPCs = {};
 
   function handleNetMsg(from,m,viaPeerKey){
-    // Learn the route to this player on every incoming message.
-    if(from && from!==state.me.id && viaPeerKey){
-      Net.routes[from] = viaPeerKey;
-    }
     // Heartbeat: any message from a remote player counts as "seen" — clears laggy/dropped.
     if(from && from!==state.me.id){
       state.peerLastSeen[from] = performance.now();
@@ -1843,9 +1828,8 @@ const Game=(()=>{
         if(added){ saveLibrary(); if(state.docked) renderHub(); }
       }
     } else if(m.kind==='lobby_join'){
-      // lobby_join only travels over a direct dc — receiving it means we're directly meshed.
+      // A peer introducing themselves — add to the lobby roster and learn the route to them.
       state.lobbyPeers[from]={name:m.name||'P-'+from.slice(0,3)};
-      delete state.pendingPeers[from];
       if(viaPeerKey) Net.directRoutes[from] = viaPeerKey;
       if(typeof refreshLobbyMP==='function') refreshLobbyMP();
       if(typeof addLobbyChatLine==='function') addLobbyChatLine('* '+(m.name||from.slice(0,4))+' joined','sys');
@@ -1888,12 +1872,6 @@ const Game=(()=>{
         ownerId: from
       };
       startPlaying();
-    } else if(m.kind==='mesh_view'){
-      // Sender is telling us their direct-route list and how recently each link saw traffic.
-      state.meshViews[from] = {
-        direct: Array.isArray(m.direct) ? m.direct : [],
-        receivedAt: performance.now()
-      };
     } else if(m.kind==='pirate_killed'){
       // Killer broadcasts on each fresh pirate kill so we all increment exactly once.
       state.piratesKilled++;
@@ -1930,93 +1908,12 @@ const Game=(()=>{
           idx = state.traderIds.indexOf(eid); if(idx>=0) state.traderIds.splice(idx,1);
         }
       }
-    } else if(m.kind==='peer_check'){
-      // Someone is asking how recently we've heard from m.target.
-      const last = state.peerLastSeen[m.target];
-      const ago = last ? (performance.now()-last) : null;
-      Net.broadcast({kind:'peer_check_reply', target:m.target, ago});
-    } else if(m.kind==='peer_check_reply'){
-      const p = state.players[m.target];
-      if(p && p._gossipReplies) p._gossipReplies[from] = m.ago;
-    } else if(m.kind==='peer_list'){
-      // Introducer is telling us about other peers we should auto-connect to.
-      if(Array.isArray(m.ids)){
-        let added=false;
-        for(const id of m.ids){
-          if(id && id!==state.me.id && !Net.directRoutes[id] && !state.pendingPeers[id]){
-            state.pendingPeers[id] = {since: performance.now(), lastRetry: performance.now()};
-            added = true;
-            autoOfferTo(id);
-          }
-        }
-        if(added && typeof refreshLobbyMP==='function') refreshLobbyMP();
-      }
-    } else if(m.kind==='signal_offer' || m.kind==='signal_answer'){
-      // Dedup so floods don't loop.
-      if(m.sigId){
-        const tag = m.kind+':'+m.sigId;
-        if(_seenSigs.has(tag)) return;
-        _seenSigs.add(tag);
-        // Bounded set to avoid unbounded growth in long sessions.
-        if(_seenSigs.size>500){ const it=_seenSigs.values().next().value; _seenSigs.delete(it); }
-      }
-      if(m.target===state.me.id){
-        if(m.kind==='signal_offer') handleAutoOffer(from, m);
-        else handleAutoAnswer(from, m);
-      } else {
-        // Pass it on toward target; skip the channel we got it from.
-        Net.relayToward(m.target, m, viaPeerKey);
-      }
     }
-  }
-
-  /* -------- Auto-introduction: build a full mesh through relays -------- */
-  async function autoOfferTo(remoteId){
-    // Skip only if we already have a *direct* dc. `Net.routes` can hold relay-only entries
-    // from forwarded signal traffic; those don't count as having a real link.
-    if(!remoteId || remoteId===state.me.id || Net.directRoutes[remoteId]) return;
-    const sigId = rid();
-    const pc = new RTCPeerConnection(ICE);
-    const dc = pc.createDataChannel('g');
-    setupDC(pc, dc);
-    autoPCs[sigId] = pc;
-    pc.onicecandidate = async e => {
-      if(!e.candidate){
-        const payload = JSON.stringify(pc.localDescription);
-        Net.relayToward(remoteId, {from: state.me.id, kind:'signal_offer', target:remoteId, sigId, payload});
-      }
-    };
-    try {
-      await pc.setLocalDescription(await pc.createOffer());
-    } catch(_) { delete autoPCs[sigId]; try{ pc.close(); }catch(_){} }
-  }
-  async function handleAutoOffer(senderId, m){
-    // We're the target. Stand up a pc, accept the offer, and send back an answer.
-    const pc = new RTCPeerConnection(ICE);
-    pc.ondatachannel = e => setupDC(pc, e.channel);
-    autoPCs[m.sigId] = pc;
-    let answered = false;
-    pc.onicecandidate = async e => {
-      if(!e.candidate && !answered){
-        answered = true;
-        const payload = JSON.stringify(pc.localDescription);
-        Net.relayToward(senderId, {from: state.me.id, kind:'signal_answer', target:senderId, sigId:m.sigId, payload});
-      }
-    };
-    try {
-      await pc.setRemoteDescription(JSON.parse(m.payload));
-      await pc.setLocalDescription(await pc.createAnswer());
-    } catch(_) { delete autoPCs[m.sigId]; try{ pc.close(); }catch(_){} }
-  }
-  function handleAutoAnswer(senderId, m){
-    const pc = autoPCs[m.sigId]; if(!pc) return;
-    try { pc.setRemoteDescription(JSON.parse(m.payload)); } catch(_){}
   }
 
   /* -------- Peer health: laggy → gossip → recover or DNF -------- */
   const PEER_LAGGY_MS = 2500;     // brief silence — show laggy marker, start gossip
   const PEER_DROP_MS  = 30000;    // sustained silence — declare DNF
-  const PEER_GOSSIP_INTERVAL_MS = 5000;
   // Lobby liveness: a data channel opening doesn't prove we can hear the peer back.
   // Heartbeats arrive ~every 2s; if we go quiet this long past an initial grace window,
   // treat the link as unconfirmed (likely one-way) rather than claiming a confident ✓.
@@ -2065,17 +1962,9 @@ const Game=(()=>{
     p._status='dropped';
     const name = p.name||id.slice(0,4);
     (state.mode==='playing' ? chatLine : (s=>addLobbyChatLine(s,'sys')))('* '+name+' dropped (no signal for 30s)');
-    // Close our direct dc to this peer if we still have one; the connection is dead.
-    const key = Net.directRoutes[id];
-    if(key){
-      try { Net.peers[key]?.pc?.close(); } catch(_){}
-      delete Net.directRoutes[id];
-      delete Net.routes[id];
-    }
-    // Remove from lobby roster so mesh-status reflects reality.
+    // Forget our routing/roster state for this peer (Trystero owns the actual connection).
+    delete Net.directRoutes[id];
     delete state.lobbyPeers[id];
-    delete state.pendingPeers[id];
-    delete state.meshViews[id];
     if(typeof refreshLobbyMP==='function') refreshLobbyMP();
     // Elect a new owner for any bots the dropped peer was driving.
     if(state.mode==='playing' && isAdopterFor(id)) adoptOrphanedEntities(id);
@@ -2089,44 +1978,16 @@ const Game=(()=>{
     leaveTrysteroRoom(false);
   }
 
-  function maybeGossipAbout(id){
-    const p = state.players[id]; if(!p) return;
-    const now = performance.now();
-    if(p._lastGossipAt && now - p._lastGossipAt < PEER_GOSSIP_INTERVAL_MS) return;
-    p._lastGossipAt = now;
-    p._gossipReplies = {};
-    try { Net.broadcast({kind:'peer_check', target:id}); } catch(_){}
-    setTimeout(()=>{
-      const replies = p._gossipReplies || {};
-      const otherCanSee = Object.values(replies).some(ago => ago!==null && ago < PEER_LAGGY_MS);
-      // If at least one peer can still reach the target and we can't, try to re-mesh.
-      const ourAgo = performance.now() - (state.peerLastSeen[id]||0);
-      if(otherCanSee && ourAgo > PEER_LAGGY_MS){
-        // Re-open a direct route via the mesh (signal_offer floods, working peer relays).
-        delete Net.directRoutes[id]; // force autoOfferTo to actually try
-        autoOfferTo(id);
-      }
-    }, 2000);
-  }
 
   let _lastHeartbeatSent = 0;
-  let _lastMeshViewSent = 0;
   function tickPeerHealth(){
     const now = performance.now();
-    // Count Trystero peers, not the legacy manual-handshake Net.peers map (always empty
-    // under Trystero) — otherwise the lobby heartbeat never fires and peerLastSeen never
-    // updates, so we can't tell a live peer from a one-way/dead one.
-    let havePeers = Object.keys(Net.peers).length>0;
-    if(!havePeers && _trysteroRoom){ try{ havePeers = Object.keys(_trysteroRoom.getPeers()||{}).length>0; }catch(_){} }
+    let havePeers = false;
+    if(_trysteroRoom){ try{ havePeers = Object.keys(_trysteroRoom.getPeers()||{}).length>0; }catch(_){} }
     // Heartbeat keeps peerLastSeen fresh even in the silent lobby.
     if(havePeers && now-_lastHeartbeatSent > 2000){
       _lastHeartbeatSent = now;
       try { Net.broadcast({kind:'heartbeat'}); } catch(_){}
-    }
-    // mesh_view broadcast — tells others which peers we have direct routes to.
-    if(havePeers && now-_lastMeshViewSent > MESH_VIEW_BROADCAST_MS){
-      _lastMeshViewSent = now;
-      try { Net.broadcast({kind:'mesh_view', direct: buildMeshView()}); } catch(_){}
     }
     for(const id in state.players){
       if(id === state.me.id) continue;
@@ -2140,29 +2001,8 @@ const Game=(()=>{
         markPeerDropped(id);
       } else if(ago > PEER_LAGGY_MS){
         if(p._status !== 'laggy' && p._status !== 'dropped') p._status = 'laggy';
-        maybeGossipAbout(id);
       }
     }
-    // Pending-peer maintenance:
-    //  - if cross-validation shows them alive somewhere, keep retrying autoOfferTo periodically
-    //  - if nobody has seen them for the full timeout, drop them from the pending set
-    let pendingChanged = false;
-    for(const pid in state.pendingPeers){
-      const entry = state.pendingPeers[pid];
-      const since = entry.since || (entry.since = now);
-      if(someoneSeesPeerAlive(pid)){
-        const lastRetry = entry.lastRetry || 0;
-        if(now - lastRetry > PENDING_RETRY_MS){
-          entry.lastRetry = now;
-          autoOfferTo(pid);
-        }
-      } else if(now - since > PENDING_TIMEOUT_MS){
-        delete state.pendingPeers[pid];
-        delete state.meshViews[pid];
-        pendingChanged = true;
-      }
-    }
-    if(pendingChanged && typeof refreshLobbyMP==='function') refreshLobbyMP();
     // Lobby liveness: flag peers we can't actually hear back from (one-way links).
     for(const id in state.lobbyPeers){
       const lp = state.lobbyPeers[id];
@@ -2171,7 +2011,6 @@ const Game=(()=>{
       const ago = last ? (now - last) : (now - since);
       lp._stale = (now - since > PEER_LOBBY_GRACE_MS) && (ago > PEER_LOBBY_STALE_MS);
     }
-    // The mesh-status display can change as new mesh_views arrive; refresh periodically.
     if(state.mode==='lobby' && typeof refreshLobbyMP==='function') refreshLobbyMP();
   }
   setInterval(tickPeerHealth, 1000);
@@ -2404,8 +2243,6 @@ const Game=(()=>{
       state.infectionEnded = false;
     }
     if(state.gameMode==='race'){
-      // Count human peers via Trystero (lobbyPeers), not the dead legacy Net.peers map —
-      // otherwise multiplayer races always took the solo branch and never synced their start.
       // {live:true}: don't wait on one-way peers we can't hear (the 10s timeout still backstops).
       const peerCount=humanPeerCount({live:true});
       if(peerCount>0){
@@ -3913,12 +3750,9 @@ const Game=(()=>{
     // sync me
     state.tick++;
     if(me) me.docked=state.docked;
-    // ping probe every 2 seconds (only if we have peers). Count Trystero peers, not the
-    // legacy manual-handshake Net.peers map (which stays empty under Trystero).
-    if(state.tick%120===0){
-      let havePeers = Object.keys(Net.peers).length>0;
-      if(!havePeers && _trysteroRoom){ try{ havePeers = Object.keys(_trysteroRoom.getPeers()||{}).length>0; }catch(_){} }
-      if(havePeers) Net.broadcast({kind:'rtt_ping', t:performance.now()});
+    // ping probe every 2 seconds, only if we have peers.
+    if(state.tick%120===0 && humanPeerCount()>0){
+      Net.broadcast({kind:'rtt_ping', t:performance.now()});
     }
     if(state.tick%3===0 && me){
       Net.broadcast({kind:'state',name:state.me.name,x:me.x,y:me.y,vx:me.vx,vy:me.vy,rot:me.rot,hp:me.hp,maxHp:me.maxHp,team:me.team,alive:me.alive,docked:state.docked,grace:me.grace>0,thrusting:!!me.thrusting,checkpoint:me.checkpoint||0,lap:me.lap||0});
@@ -5653,8 +5487,7 @@ const Game=(()=>{
     state.killGoal = 0; state.roundEndTick = 0;
     state.nearPlatform = null;
     state.pendingVote = null;
-    // Net.peers / lobbyPeers / pendingPeers / meshViews / directRoutes left intact —
-    // that's the whole point: the mesh persists across matches.
+    // lobbyPeers / directRoutes left intact — the Trystero mesh persists across matches.
     document.body.classList.add('mode-lobby');
     document.getElementById('lobby').style.display = 'block';
     document.getElementById('endscreen').style.display = 'none';
@@ -5911,11 +5744,6 @@ const Game=(()=>{
   function startSolo(){
     state.me.name=document.getElementById('pname').value||'Solo';
     try{ localStorage.setItem('sortie_name_v1', state.me.name); }catch(_){}
-    const havePeers = Object.keys(Net.peers||{}).length>0;
-    if(havePeers && !isMeshComplete()){
-      addLobbyChatLine('* mesh not yet complete — waiting for all peers to connect','sys');
-      return;
-    }
     WORLD = parseInt(document.getElementById('worldSize')?.value)||16000;
     const seed = state.worldSeed || ((Math.random()*0x7fffffff)>>>0);
     if(!state.worldSeed) genWorld(seed);
@@ -6019,88 +5847,6 @@ const Game=(()=>{
     startPlaying();
   }
 
-  /* -------- Manual WebRTC -------- */
-  const ICE={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
-  let pendingPC=null;
-  let lastShareUrl=null;
-
-  // gzip + URL-safe base64 (no padding). Falls back to plain base64 if CompressionStream is unavailable.
-  async function packSdp(jsonStr){
-    if(typeof CompressionStream === 'undefined') return btoa(unescape(encodeURIComponent(jsonStr)));
-    const stream = new Blob([jsonStr]).stream().pipeThrough(new CompressionStream('gzip'));
-    const buf = await new Response(stream).arrayBuffer();
-    const bytes = new Uint8Array(buf);
-    let bin=''; for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
-    return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-  }
-  async function unpackSdp(packed){
-    const b64 = packed.replace(/-/g,'+').replace(/_/g,'/');
-    const padded = b64 + '==='.slice((b64.length+3)%4);
-    let bin; try { bin=atob(padded); } catch(_) { return null; }
-    const bytes=new Uint8Array(bin.length);
-    for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-    if(typeof DecompressionStream !== 'undefined'){
-      try {
-        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-        const buf = await new Response(stream).arrayBuffer();
-        return new TextDecoder().decode(buf);
-      } catch(_) { /* fall through */ }
-    }
-    try { return decodeURIComponent(escape(bin)); } catch(_) { return null; }
-  }
-  // Pull an SDP JSON string out of arbitrary input. Accepts:
-  //   - raw JSON SDP string
-  //   - URL hash form:  https://.../#offer=<packed>
-  //   - prefixed blob form: sortie-offer:<packed>  or  sortie-answer:<packed>
-  //   - bare packed blob
-  // If expectedRole is 'offer' or 'answer', reject other-role inputs.
-  async function extractSdp(text, expectedRole){
-    if(!text) return null;
-    text = text.trim();
-    // Prefixed blob: sortie-offer:... or sortie-answer:...
-    const prefixMatch = text.match(/^sortie-(offer|answer):([A-Za-z0-9_\-]+)/);
-    if(prefixMatch){
-      if(expectedRole && prefixMatch[1]!==expectedRole) return null;
-      return await unpackSdp(prefixMatch[2]);
-    }
-    // URL hash form: #offer=... or #answer=...
-    if(expectedRole){
-      const opp = expectedRole==='offer' ? 'answer' : 'offer';
-      if(text.match(new RegExp('[#&]'+opp+'='))) return null;
-      const m = text.match(new RegExp('[#&]'+expectedRole+'=([A-Za-z0-9_\\-]+)'));
-      if(m) return await unpackSdp(m[1]);
-    } else {
-      const m = text.match(/[#&](?:offer|answer)=([A-Za-z0-9_\-]+)/);
-      if(m) return await unpackSdp(m[1]);
-    }
-    if(text.startsWith('{')) return text;
-    if(/^[A-Za-z0-9_\-]+$/.test(text) && text.length>40){
-      const j = await unpackSdp(text); if(j) return j;
-    }
-    return text;
-  }
-  function shareUrlFor(role, packed){
-    return location.origin + location.pathname + '#' + role + '=' + packed;
-  }
-  async function showShareUrl(url){
-    lastShareUrl = url;
-    const el = document.getElementById('sdpLink');
-    if(el){ el.style.display='block'; el.textContent = url; }
-    const row = document.getElementById('sdpShareRow');
-    if(row) row.style.display = '';
-    // Best-effort auto-copy. iOS Safari can reject without a user gesture (or in some
-    // page-load orderings), so we report back so callers don't lie about it.
-    try { await navigator.clipboard.writeText(url); return true; }
-    catch(_) { return false; }
-  }
-  function clearShareUrl(){
-    lastShareUrl=null;
-    const el=document.getElementById('sdpLink');
-    if(el){ el.style.display='none'; el.textContent=''; }
-    const row = document.getElementById('sdpShareRow');
-    if(row) row.style.display = 'none';
-  }
-
   // Buffer status updates while the tab is hidden so the user doesn't see noisy
   // intermediate states the moment they return from the share sheet.
   let _pendingStatus = null;
@@ -6113,189 +5859,17 @@ const Game=(()=>{
     setLobbyStatusReal(t);
   }
 
-  // Handshake state: we hold the door open for 5 minutes from the user's first action.
-  // While inside this window we suppress scary "failed" messages and, when the tab
-  // becomes visible again, transparently recreate a dead pc with a fresh link.
-  const HANDSHAKE_WINDOW_MS = 5*60*1000;
-  let handshakeStart = 0;
-  let handshakeKind = null;     // 'host' | 'guest' | null
-  let cachedOfferSDP = null;    // for guest, the offer SDP to re-use on retry
-  function handshakeAlive(){ return handshakeKind && (Date.now()-handshakeStart) < HANDSHAKE_WINDOW_MS; }
-  function clearHandshake(){
-    handshakeKind=null; handshakeStart=0; cachedOfferSDP=null;
-    // Drop our hold on the pc — it's already in Net.peers via setupDC. Without this, the
-    // NEXT makeOffer would close it (and the live connection) before opening a fresh pc.
-    pendingPC = null;
-  }
-
-  // Surface ICE state but stay calm during pre-connection — auto-retry handles transient failures.
-  function watchPC(pc, who){
-    pc.oniceconnectionstatechange = ()=>{
-      const s = pc.iceConnectionState;
-      if(s==='checking') setLobbyStatus(who+': checking connection...');
-      else if(s==='connected' || s==='completed') setLobbyStatus(who+': linked. Opening data channel...');
-      else if(s==='failed' || s==='disconnected'){
-        if(handshakeAlive()){
-          // Don't alarm the user — we'll silently retry on return to the tab.
-          setLobbyStatus(who+': link not yet established — still trying. Send/receive the link if you haven\'t.');
-        } else if(handshakeKind){
-          setLobbyStatus(who+': giving up after 5 minutes. Tap Create Offer (or paste a new link) to try again.');
-        } else {
-          setLobbyStatus(who+': '+s+'.');
-        }
-      }
-    };
-  }
-
-  async function _makeOfferImpl(retry){
-    state.me.name=document.getElementById('pname').value||state.me.name;
-    clearShareUrl();
-    try { pendingPC?.close(); } catch(_){}
-    const pc=new RTCPeerConnection(ICE);
-    watchPC(pc,'host');
-    const dc=pc.createDataChannel('g');
-    setupDC(pc,dc);
-    pc.onicecandidate=async e=>{
-      if(!e.candidate){
-        const sdp = JSON.stringify(pc.localDescription);
-        const url = shareUrlFor('offer', await packSdp(sdp));
-        const copied = await showShareUrl(url);
-        setLobbyStatus(retry
-          ? 'Link refreshed (iOS suspended us). Share THIS new link if you haven\'t connected yet.'
-          : 'Offer link ready — '+(copied?'copied to clipboard. ':'tap Copy or Share. ')+'Send it to your friend.');
-      }
-    };
-    await pc.setLocalDescription(await pc.createOffer());
-    pendingPC=pc;
-    if(!retry) setLobbyStatus('Generating offer link...');
-  }
-  async function makeOffer(){
-    handshakeStart = Date.now();
-    handshakeKind = 'host';
-    cachedOfferSDP = null;
-    await _makeOfferImpl(false);
-  }
-
-  async function _acceptOfferImpl(retry){
-    if(!cachedOfferSDP) return;
-    state.me.name=document.getElementById('pname').value||state.me.name;
-    let off; try { off = JSON.parse(cachedOfferSDP); } catch(_) { setLobbyStatus('Offer is not valid SDP.'); return; }
-    clearShareUrl();
-    try { pendingPC?.close(); } catch(_){}
-    const pc=new RTCPeerConnection(ICE);
-    watchPC(pc,'guest');
-    pc.ondatachannel=e=>setupDC(pc,e.channel);
-    pc.onicecandidate=async e=>{
-      if(!e.candidate){
-        const sdp = JSON.stringify(pc.localDescription);
-        // Plain (non-URL) form so chat apps don't turn it into a clickable link.
-        // The host MUST paste it, not tap it — otherwise they'd reload their own offer tab.
-        const blob = 'sortie-answer:'+(await packSdp(sdp));
-        const copied = await showShareUrl(blob);
-        setLobbyStatus(retry
-          ? 'Answer refreshed (iOS suspended us). Copy and send THIS new answer back.'
-          : 'Answer ready — '+(copied?'copied to clipboard. ':'tap Copy or Share. ')+'Send it back to the host.');
-      }
-    };
-    await pc.setRemoteDescription(off);
-    await pc.setLocalDescription(await pc.createAnswer());
-    pendingPC=pc;
-    if(!retry) setLobbyStatus('Generating answer link...');
-  }
-  async function acceptOffer(rawOfferSdp){
-    // Source priority: explicit arg from auto-accept path, else nothing (no UI input anymore).
-    const raw = rawOfferSdp || null;
-    if(!raw){ setLobbyStatus('No offer to accept — open the host\'s link to receive one.'); return; }
-    handshakeStart = Date.now();
-    handshakeKind = 'guest';
-    cachedOfferSDP = raw;
-    await _acceptOfferImpl(false);
-  }
-
-  async function acceptAnswer(){
-    // Underlying handler used by the Receive Answer modal.
-    // Returns true on success, false on any error.
-    if(!pendingPC){ setLobbyStatus('No pending offer in this tab — create one first.'); return false; }
-    const src = document.getElementById('answerInput')?.value || '';
-    const raw = await extractSdp(src, 'answer');
-    if(!raw){ setLobbyStatus('No valid answer — paste the sortie-answer string from your friend.'); return false; }
-    let ans; try { ans = JSON.parse(raw); } catch(_) { setLobbyStatus('Answer is not valid SDP.'); return false; }
-    if(pendingPC.connectionState==='failed' || pendingPC.connectionState==='closed'){
-      setLobbyStatus('Old offer expired (iOS likely suspended us). Recreating — share the new link, then paste the matching answer.');
-      handshakeStart = Date.now();
-      await _makeOfferImpl(true);
-      return false;
-    }
-    await pendingPC.setRemoteDescription(ans);
-    setLobbyStatus('Answer accepted — waiting for ICE to connect...');
-    return true;
-  }
-
-  function openAnswerModal(){
-    const el = document.getElementById('answerModal'); if(!el) return;
-    const inp = document.getElementById('answerInput'); if(inp) inp.value = '';  // always start empty
-    el.style.display = 'block';
-  }
-  function closeAnswerModal(){
-    const el = document.getElementById('answerModal'); if(!el) return;
-    el.style.display = 'none';
-  }
-  async function pasteAnswerIntoModal(){
-    try {
-      const t = await navigator.clipboard.readText();
-      if(!t){ setLobbyStatus('Clipboard is empty.'); return; }
-      document.getElementById('answerInput').value = t;
-    } catch(_) {
-      setLobbyStatus('Paste blocked — long-press the box and paste manually.');
-    }
-  }
-  async function submitAnswerFromModal(){
-    if(await acceptAnswer()) closeAnswerModal();
-    // On failure leave the modal open so the user can see the status and try again.
-  }
-
-  // When the tab becomes visible again, if our pc died during a backgrounded share
-  // and we're still within the 5-minute window, transparently rebuild it.
-  async function maybeRetryHandshake(){
-    if(!handshakeAlive()) return;
-    const dead = !pendingPC || pendingPC.connectionState==='failed' || pendingPC.connectionState==='closed';
-    // Already connected? Don't touch it.
-    const peerCount = Object.keys(Net.peers||{}).length;
-    if(!dead || peerCount>0) return;
-    if(handshakeKind==='host') await _makeOfferImpl(true);
-    else if(handshakeKind==='guest' && cachedOfferSDP) await _acceptOfferImpl(true);
-  }
-
+  // Flush any status update buffered while the tab was hidden (e.g. returning from a
+  // share sheet), so the user sees the latest state rather than a stale intermediate one.
   document.addEventListener('visibilitychange', ()=>{
     if(document.visibilityState === 'hidden'){
       _wasHiddenSince = Date.now();
     } else {
       if(_pendingStatus){ setLobbyStatusReal(_pendingStatus); _pendingStatus = null; }
-      maybeRetryHandshake();
     }
   });
 
-  async function sdpCopy(){
-    if(!lastShareUrl){ setLobbyStatus('Nothing to copy yet.'); return; }
-    try { await navigator.clipboard.writeText(lastShareUrl); setLobbyStatus('Copied to clipboard.'); }
-    catch(_) { setLobbyStatus('Copy blocked — long-press the link below and copy manually.'); }
-  }
-  async function sdpShare(){
-    const blob = lastShareUrl;
-    if(!blob){ setLobbyStatus('Nothing to share yet — create an offer first.'); return; }
-    const isUrl = /^https?:\/\//.test(blob);
-    if(navigator.share){
-      try {
-        await navigator.share(isUrl
-          ? {title:'Join my Sortie game', url:blob}
-          : {title:'Sortie answer', text:blob});
-        return;
-      } catch(_) { /* user cancelled or failed — fall through to copy */ }
-    }
-    await sdpCopy();
-  }
-
-  // If the page was opened via a share link, auto-accept the offer.
+  // If the page was opened via a room invite link, auto-join.
   async function consumeInboundHash(){
     const h = location.hash || '';
     // New: room invite link → auto-join.
@@ -6334,43 +5908,6 @@ const Game=(()=>{
   // Open the net-debug panel automatically if the URL asks for it (#debug or #room=X&debug).
   if(/debug/i.test(location.hash)) { try { toggleDebug(); } catch(_){} }
   consumeInboundHash();
-  function setupDC(pc,dc){
-    const peerId=rid();
-    Net.peers[peerId]={pc,dc};
-    dc.onopen=()=>{
-      clearHandshake();
-      setLobbyStatus('Peer connected — chat below, then host taps Start.');
-      // Mid-game join: still goes through the existing vote flow.
-      if(state.mode!=='lobby') askVote(peerId,'Remote');
-      // Announce ourselves to the new peer.
-      try{ dc.send(JSON.stringify({from:state.me.id,kind:'lobby_join',name:state.me.name||'P-'+state.me.id.slice(0,3)})); }catch(_){}
-      // Tell them about every OTHER peer we're already connected to so they can auto-introduce.
-      const otherIds = Object.keys(Net.routes).filter(id => id && id!==state.me.id);
-      if(otherIds.length){
-        try{ dc.send(JSON.stringify({from:state.me.id,kind:'peer_list',ids:otherIds})); }catch(_){}
-      }
-      // Legacy state message (kept so mid-game joiners still get our ship state).
-      dc.send(JSON.stringify({from:state.me.id,kind:'state',name:state.me.name,x:0,y:0,vx:0,vy:0,rot:0,hp:30,maxHp:30,team:0,alive:true}));
-      if(state.worldSeed){
-        try{ dc.send(JSON.stringify({from:state.me.id,kind:'world_seed',seed:state.worldSeed})); }catch(_){}
-      }
-      if(state.shipLibrary.length){
-        try{ dc.send(JSON.stringify({from:state.me.id,kind:'library',designs:state.shipLibrary})); }catch(_){}
-      }
-      refreshLobbyMP();
-    };
-    dc.onmessage=ev=>{ try{ const m=JSON.parse(ev.data); handleNetMsg(m.from,m,peerId); }catch(_){} };
-    dc.onclose=()=>{
-      delete Net.peers[peerId];
-      // Drop any routes that pointed through this dead channel.
-      for(const rid in Net.routes){ if(Net.routes[rid]===peerId) delete Net.routes[rid]; }
-      for(const rid in Net.directRoutes){ if(Net.directRoutes[rid]===peerId){ delete Net.directRoutes[rid]; delete state.lobbyPeers[rid]; delete state.meshViews[rid]; }}
-      if(!Object.keys(Net.peers).length){ state.lobbyPeers={}; state.pendingPeers={}; state.meshViews={}; }
-      refreshLobbyMP();
-      if(state.mode==='lobby') addLobbyChatLine('* a peer disconnected','sys');
-      else chatLine('* peer disconnected');
-    };
-  }
 
   /* -------- Lobby chat + player list -------- */
   function addLobbyChatLine(text, cls){
@@ -6381,65 +5918,6 @@ const Game=(()=>{
     log.appendChild(div);
     while(log.children.length>200) log.removeChild(log.firstChild);
     log.scrollTop = log.scrollHeight;
-  }
-  // --- Mesh-view aggregation ---
-  // Each peer periodically broadcasts the list of peers they have a *direct* dc to,
-  // along with `ago` seconds since they last heard from that peer. Cross-referencing
-  // these gives us a richer global picture than each peer's local view alone:
-  //  - "Is P alive?" — answered yes if *anyone* sees them directly with low ago.
-  //  - "Does P have a route to Q?" — answered by P's own view, accepting older views
-  //    when cross-validation shows P is still alive elsewhere.
-  const MESH_VIEW_BROADCAST_MS = 3000;
-  const MESH_VIEW_FRESH_MS = 8000;   // a view stays "fresh" for ~2.5 broadcast intervals
-  const MESH_LINK_OK_MS = 4000;       // direct link is healthy if ago < 4s (heartbeat is 2s)
-  const PENDING_TIMEOUT_MS = 30000;
-  const PENDING_RETRY_MS = 10000;
-
-  function buildMeshView(){
-    const now = performance.now();
-    const direct = [];
-    for(const id in Net.directRoutes){
-      const lastSeen = state.peerLastSeen[id];
-      const ago = lastSeen ? Math.round((now - lastSeen)/100)/10 : 99;
-      direct.push({id, ago});
-    }
-    return direct;
-  }
-  // Cross-validation: does any *other* peer's fresh mesh_view report targetId as a
-  // healthy direct link? Treat that as strong evidence targetId is still alive.
-  function someoneSeesPeerAlive(targetId){
-    const now = performance.now();
-    for(const viewerId in state.meshViews){
-      if(viewerId === targetId) continue;
-      const v = state.meshViews[viewerId];
-      if(now - v.receivedAt > MESH_VIEW_FRESH_MS) continue;
-      const e = v.direct && v.direct.find(d => d.id === targetId);
-      if(e && (e.ago||0)*1000 < MESH_LINK_OK_MS) return true;
-    }
-    return false;
-  }
-  // Does `viewerId` currently have a healthy direct route to `targetId`?
-  // For self, use our own direct-routes table. For others, use their mesh_view —
-  // accepting stale views when they're cross-validated as alive elsewhere.
-  function peerHasDirectTo(viewerId, targetId){
-    if(viewerId === state.me.id){
-      if(!Net.directRoutes[targetId]) return false;
-      const ago = performance.now() - (state.peerLastSeen[targetId]||0);
-      return ago < MESH_LINK_OK_MS;
-    }
-    const view = state.meshViews[viewerId];
-    if(!view) return false;
-    const viewFresh = (performance.now() - view.receivedAt) < MESH_VIEW_FRESH_MS;
-    // Stale view: trust it only if we have independent evidence the viewer is alive.
-    if(!viewFresh && !someoneSeesPeerAlive(viewerId)) return false;
-    const e = view.direct && view.direct.find(d => d.id === targetId);
-    return !!(e && (e.ago||0)*1000 < MESH_LINK_OK_MS);
-  }
-
-  function isMeshComplete(){
-    // Trystero maintains a full mesh automatically among everyone in the room, so there's
-    // no "still forming" state to gate on — Start is always allowed.
-    return true;
   }
   function refreshLobbyMP(){
     const el=document.getElementById('lobbyPlayers'); if(!el) return;
