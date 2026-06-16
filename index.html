@@ -1470,10 +1470,16 @@ const Game=(()=>{
         const rtt=pair.currentRoundTripTime!=null?(Math.round(pair.currentRoundTripTime*1000)+'ms'):'?';
         const path=(lc.candidateType||'?')+'/'+(rc.candidateType||'?');
         const relayed=(lc.candidateType==='relay'||rc.candidateType==='relay')?' [TURN-relayed]':'';
-        const fam=/:/.test(lc.ip||lc.address||'')?'IPv6':'IPv4';
-        dbg('  ['+_labelForTrystero(id)+']  '+fam+relayed);
+        // Family from whichever side actually exposes an IP — host candidates are often
+        // mDNS-masked to '?', so reading only the local side mislabels IPv6 pairs as IPv4.
+        const anyIp=(rc.ip||rc.address||lc.ip||lc.address||'');
+        const fam=anyIp.includes(':')?'IPv6':(anyIp?'IPv4':'fam?');
+        const tx=pair.bytesSent||0, rx=pair.bytesReceived||0;
+        // Flag half-open links: connected + RTT measured, but app data flows only one way.
+        const oneway=(tx>1000&&rx===0)?' ⚠ ONE-WAY (rx=0 — peer not reaching us)':((rx>1000&&tx===0)?' ⚠ ONE-WAY (tx=0)':'');
+        dbg('  ['+_labelForTrystero(id)+']  '+fam+relayed+oneway);
         dbg('     '+fmt(lc)+'  ⇄  '+fmt(rc));
-        dbg('     path='+path+' iceRTT='+rtt+(appPing!=null?(' appPing='+appPing+'ms'):'')+' tx='+(pair.bytesSent||0)+'b rx='+(pair.bytesReceived||0)+'b');
+        dbg('     path='+path+' iceRTT='+rtt+(appPing!=null?(' appPing='+appPing+'ms'):'')+' tx='+tx+'b rx='+rx+'b');
       } catch(e){ dbg('  ['+_labelForTrystero(id)+'] getStats threw '+(e&&e.message||e)); }
     }
   }
