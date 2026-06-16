@@ -2156,6 +2156,11 @@ const Game=(()=>{
   /* -------- Game logic -------- */
   function startPlaying(){
     if(state.mode==='playing') return;
+    // Sync our in-game name from the lobby input. Covers the case where a PEER started the
+    // round (via start_game) and our own commitName change/blur never fired (e.g. Safari
+    // focus timing) — otherwise we'd spawn under a stale P-xxx name on every leaderboard.
+    const _nm = document.getElementById('pname')?.value;
+    if(_nm) state.me.name = _nm;
     const gameMode=document.getElementById('gamemode').value||'deathmatch';
     const mins=Math.max(0,Math.min(60,parseInt(document.getElementById('roundmin').value)||0));
     const goal=Math.max(0,Math.min(999,parseInt(document.getElementById('killgoal').value)||0));
@@ -2728,7 +2733,10 @@ const Game=(()=>{
       }
       if(!ent) continue;
       ent._ownerId = owner;
-      ent._wakeTick = e.wakeTick || 0;
+      // Preserve undefined (don't coerce to 0): the king has no wakeTick and must wake on
+      // kill-count only. `e.wakeTick || 0` would give it _wakeTick=0, which the tick-wake
+      // check (tick >= 0, always true) fires on tick 1 — spawning the king instantly.
+      ent._wakeTick = e.wakeTick;
       ent._dormant = dormant;
       state.players[e.id] = ent;
       if(!dormant && owner === state.me.id && idList) idList.push(e.id);
