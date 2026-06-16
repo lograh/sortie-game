@@ -831,20 +831,20 @@ const Music=(()=>{
         leadNote(t, ch.lead[meloIdx]);
       }
     }
-    // drums fade in with action
-    if(I>0.08){
-      if((I>0.45?[0,4,8,12]:[0,8]).includes(s)) kick(t, 0.25+0.5*I);
-      if(I>0.5 && (s===2||s===6||s===10||s===14)) hat(t, 0.06+0.08*I);
+    // drums are a combat signal — silent when calm, kick in (then add hats) as it heats up
+    if(I>0.2){
+      if((I>0.5?[0,4,8,12]:[0,8]).includes(s)) kick(t, 0.3+0.45*I);
+      if(I>0.55 && (s===2||s===6||s===10||s===14)) hat(t, 0.06+0.08*I);
     }
   }
 
   function scheduler(){
     if(!running || !ctx) return;
-    intensity += (target-intensity)*0.06;
+    intensity += (target-intensity) * (target>intensity ? 0.12 : 0.02);  // fast attack, slow release → combat punches in, eases out
     const now=ctx.currentTime;
-    padBus.gain.setTargetAtTime(0.14+0.12*intensity, now, 0.4);
-    leadBus.gain.setTargetAtTime(0.05+0.20*intensity, now, 0.4);
-    drumBus.gain.setTargetAtTime(0.7*intensity, now, 0.4);
+    padBus.gain.setTargetAtTime(0.14+0.12*intensity, now, 0.3);
+    leadBus.gain.setTargetAtTime(0.05+0.25*intensity, now, 0.3);
+    drumBus.gain.setTargetAtTime(0.85*intensity, now, 0.3);
     while(nextTime < now + LOOKAHEAD){ scheduleStep(gstep, nextTime); gstep++; nextTime += STEP; }
     timer=setTimeout(scheduler, TICK);
   }
@@ -923,6 +923,7 @@ const Game=(()=>{
     traderIds:[],     // peaceful NPCs in state.players
     piratesKilled:0,  // increments on each pirate death (king summon trigger)
     kingActive:false, // a Pirate King is currently in the world
+    combatHeat:0,     // 0..1 sticky "in a firefight" level — spikes on hits, decays over ~2-3s; drives music intensity
     pickups:[],       // [{x,y,vx,vy,rot,type,life}] floating module pickups
     pings:[],         // [{x,y,team,life}] map pings
     npcSpawnCd:600,   // ticks until next NPC spawn attempt
@@ -3815,7 +3816,8 @@ const Game=(()=>{
           takeDamage(p, b.dmg);
           b._dead=true;
           p.hitFlash=8;
-          if(p.id===state.me.id){ Sound.hit(); spawnHitArc(p,b); }
+          if(p.id===state.me.id){ Sound.hit(); spawnHitArc(p,b); state.combatHeat=Math.min(1, state.combatHeat+0.55); }   // taking fire = big music spike
+          else if(shooter && shooter.id===state.me.id){ state.combatHeat=Math.min(1, state.combatHeat+0.12); }            // landing hits = we're engaged
           if(p.hp<=0){
             if(p.pirate){
               // Only one peer should spawn the loot. Killer-spawns so they can pick it up
@@ -5412,11 +5414,14 @@ const Game=(()=>{
         Sound.setEngine(active, intensity, boosting);
       }
     }
-    // generative music intensity, updated twice a second
-    if(state.tick%30===0){
-      let intens = 0.1; // floor — never fully silent
+    // Combat heat decays every frame (spikes are added at the bullet-hit site). ~0.985/frame
+    // ≈ halves in ~1.5s, so a firefight keeps the music lifted between the coarser samples.
+    state.combatHeat = (state.combatHeat||0) * 0.985;
+    // generative music intensity, sampled ~6×/s so transient danger actually registers
+    if(state.tick%10===0){
+      let intens = 0.06; // calm floor
       if(state.docked){
-        intens = 0.04;
+        intens = 0.03;
       } else if(me2 && me2.alive){
         let nearbyHostiles = 0;
         for(const id in state.players){
@@ -5426,13 +5431,13 @@ const Game=(()=>{
           const hostile = op.pirate || op.team===0 || op.team!==me2.team;
           if(!hostile) continue;
           const dx=op.x-me2.x, dy=op.y-me2.y;
-          if(dx*dx+dy*dy<1800*1800) nearbyHostiles++;
+          if(dx*dx+dy*dy<2200*2200) nearbyHostiles++;
         }
-        intens += Math.min(0.45, nearbyHostiles*0.15);
-        if(me2.hitFlash>0) intens += 0.25;
+        intens += state.combatHeat * 0.7;                 // recent fighting — the dominant, sticky driver
+        intens += Math.min(0.30, nearbyHostiles*0.13);     // danger nearby even before shots land
         if(state.kingActive) intens += 0.20;
-        if(inRadioactiveNebula(me2.x,me2.y)) intens += 0.15;
-        if(me2.hp/me2.maxHp < 0.25) intens += 0.15; // low HP raises tension
+        if(inRadioactiveNebula(me2.x,me2.y)) intens += 0.12;
+        if(me2.hp/me2.maxHp < 0.25) intens += 0.15;        // low HP raises tension
       }
       Music.setIntensity(Math.min(1, intens));
     }
@@ -5740,6 +5745,7 @@ const Game=(()=>{
     state.raceCheckpoints = []; state.raceCountdown = 0;
     state.racePeersReady = new Set();
     state.kingActive = false; state.piratesKilled = 0;
+    state.combatHeat = 0;
     state.ball = null; state.goals = []; state.teamScores = {};
     state.explored = new Set();   // clear minimap fog so the next round starts dark
     state.worldSeed = 0;
