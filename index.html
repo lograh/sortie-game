@@ -718,86 +718,148 @@ const Sound=(()=>{
 })();
 
 /* ============================================================
-   Music (generative ambient: chill chimes, intensity-aware)
+   Music — structured generative synthwave/space score.
+   Steady tempo, a moving minor chord progression (Cm·Ab·Eb·Bb = i–VI–III–VII,
+   the classic "epic space" progression), a driving pulse bass, arpeggios, a sparse
+   lead melody, and drums that fade in with intensity — plus a delay send for space
+   echo. It's MUSIC at intensity 0 (pad + chords + bass pulse); intensity adds density,
+   brightness, drums, and lead. Lookahead scheduler for tight timing.
    ============================================================ */
 const Music=(()=>{
-  // C minor pentatonic across two octaves — always sounds OK randomized
-  const SCALE=[261.63, 311.13, 349.23, 391.99, 466.16, 523.25, 622.25, 698.46];
-  const BASS_ROOT=65.41; // C2
-  let ctx=null, master=null, pad=null;
-  let scheduled=false;
-  let intensity=0, target=0;
-  let beat=0;
+  let ctx=null, master=null, padBus=null, bassBus=null, leadBus=null, drumBus=null, delay=null, _noise=null;
+  let running=false, intensity=0, target=0, baseVol=0.26, userVol=1;
+  const BPM=92, STEP=(60/BPM)/4, SPB=16, LOOKAHEAD=0.13, TICK=25;
+  let gstep=0, nextTime=0, timer=null, meloIdx=2;
+
+  // C natural minor. One bar per chord: Cm · Ab · Eb · Bb. bass = root (low octave),
+  // chord = triad (mid octave), lead = consonant melody notes to walk through.
+  const PROG=[
+    { bass:65.41, chord:[130.81,155.56,196.00], lead:[261.63,311.13,392.00,466.16,523.25] }, // Cm
+    { bass:51.91, chord:[103.83,130.81,155.56], lead:[261.63,311.13,415.30,523.25,622.25] }, // Ab
+    { bass:77.78, chord:[155.56,196.00,233.08], lead:[311.13,392.00,466.16,523.25,622.25] }, // Eb
+    { bass:58.27, chord:[116.54,146.83,174.61], lead:[293.66,349.23,466.16,523.25,587.33] }, // Bb
+  ];
 
   function ensure(){
     if(ctx) return;
     try{ ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch(_){ return; }
-    master=ctx.createGain(); master.gain.value=0.16; master.connect(ctx.destination);
-    // sustained sub-pad — two detuned sines at root
-    pad=ctx.createGain(); pad.gain.value=0; pad.connect(master);
-    for(const detune of [-7, 0, 7]){
-      const o=ctx.createOscillator(); o.type='sine'; o.frequency.value=BASS_ROOT*2;
-      o.detune.value=detune;
-      const g=ctx.createGain(); g.gain.value=0.5;
-      o.connect(g); g.connect(pad);
-      o.start();
+    master=ctx.createGain(); master.gain.value=baseVol*userVol;
+    const comp=ctx.createDynamicsCompressor();
+    comp.threshold.value=-16; comp.knee.value=24; comp.ratio.value=3; comp.attack.value=0.005; comp.release.value=0.25;
+    master.connect(comp); comp.connect(ctx.destination);
+    // spacey feedback delay (lead/arp send into it)
+    delay=ctx.createDelay(1.0); delay.delayTime.value=STEP*3;
+    const fb=ctx.createGain(); fb.gain.value=0.34;
+    const wet=ctx.createGain(); wet.gain.value=0.42;
+    delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(master);
+    padBus=ctx.createGain();  padBus.gain.value=0.16;  padBus.connect(master);
+    bassBus=ctx.createGain(); bassBus.gain.value=0.9;  bassBus.connect(master);
+    leadBus=ctx.createGain(); leadBus.gain.value=0.05; leadBus.connect(master); leadBus.connect(delay);
+    drumBus=ctx.createGain(); drumBus.gain.value=0.0;  drumBus.connect(master);
+  }
+
+  // --- voices (all one-shot nodes) ---
+  function padChord(t, freqs){
+    const dur=STEP*SPB*2;                         // ~2 bars, overlapping → continuous bed
+    for(const f of freqs) for(const det of [-6,6]){
+      const o=ctx.createOscillator(); o.type='sawtooth'; o.frequency.value=f; o.detune.value=det;
+      const lp=ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=850; lp.Q.value=0.6;
+      const g=ctx.createGain(); g.gain.setValueAtTime(0,t);
+      g.gain.linearRampToValueAtTime(0.05, t+0.6);
+      g.gain.setValueAtTime(0.05, t+dur*0.55);
+      g.gain.exponentialRampToValueAtTime(0.0001, t+dur);
+      o.connect(lp); lp.connect(g); g.connect(padBus); o.start(t); o.stop(t+dur+0.05);
     }
   }
-  function envNote(freq, t, dur, gain, type){
-    if(!ctx) return;
-    const o=ctx.createOscillator(); o.type=type||'sine'; o.frequency.value=freq;
-    const g=ctx.createGain();
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(gain, t+0.02);
+  function bassHit(t, f, accent){
+    const dur=STEP*(accent?3.2:2.2);
+    const o=ctx.createOscillator(); o.type='sawtooth'; o.frequency.value=f;
+    const sub=ctx.createOscillator(); sub.type='sine'; sub.frequency.value=f;
+    const lp=ctx.createBiquadFilter(); lp.type='lowpass';
+    lp.frequency.setValueAtTime(accent?1500:950, t); lp.frequency.exponentialRampToValueAtTime(150, t+dur*0.8);
+    const g=ctx.createGain(); g.gain.setValueAtTime(0,t);
+    g.gain.linearRampToValueAtTime(accent?0.5:0.42, t+0.012); g.gain.exponentialRampToValueAtTime(0.0001, t+dur);
+    o.connect(lp); sub.connect(lp); lp.connect(g); g.connect(bassBus);
+    o.start(t); sub.start(t); o.stop(t+dur+0.03); sub.stop(t+dur+0.03);
+  }
+  function arpPluck(t, f, bright){
+    const dur=STEP*1.6;
+    const o=ctx.createOscillator(); o.type=bright?'square':'triangle'; o.frequency.value=f;
+    const g=ctx.createGain(); g.gain.setValueAtTime(0,t);
+    g.gain.linearRampToValueAtTime(0.15, t+0.006); g.gain.exponentialRampToValueAtTime(0.0001, t+dur);
+    o.connect(g); g.connect(leadBus); o.start(t); o.stop(t+dur+0.03);
+  }
+  function leadNote(t, f){
+    const dur=STEP*5;
+    const o=ctx.createOscillator(); o.type='triangle'; o.frequency.value=f;
+    const sh=ctx.createOscillator(); sh.type='sine'; sh.frequency.value=f*2;
+    const g=ctx.createGain(); g.gain.setValueAtTime(0,t);
+    g.gain.linearRampToValueAtTime(0.22, t+0.05); g.gain.setValueAtTime(0.22, t+dur*0.5);
     g.gain.exponentialRampToValueAtTime(0.0001, t+dur);
-    o.connect(g); g.connect(master);
-    o.start(t); o.stop(t+dur+0.05);
+    const sg=ctx.createGain(); sg.gain.value=0.08;
+    o.connect(g); sh.connect(sg); sg.connect(g); g.connect(leadBus);
+    o.start(t); sh.start(t); o.stop(t+dur+0.05); sh.stop(t+dur+0.05);
   }
-  function chime(t, freq){
-    envNote(freq, t, 1.8, 0.10, 'sine');
-    envNote(freq*1.5, t, 0.7, 0.025, 'sine'); // soft fifth shimmer
+  function kick(t, level){
+    const o=ctx.createOscillator(); o.type='sine';
+    o.frequency.setValueAtTime(130,t); o.frequency.exponentialRampToValueAtTime(45,t+0.12);
+    const g=ctx.createGain(); g.gain.setValueAtTime(level,t); g.gain.exponentialRampToValueAtTime(0.0001,t+0.18);
+    o.connect(g); g.connect(drumBus); o.start(t); o.stop(t+0.2);
   }
-  function bass(t, freq){
-    envNote(freq, t, 1.0, 0.09, 'triangle');
+  function hat(t, level){
+    if(!_noise){ const n=Math.floor(ctx.sampleRate*0.2); _noise=ctx.createBuffer(1,n,ctx.sampleRate); const d=_noise.getChannelData(0); for(let i=0;i<n;i++) d[i]=Math.random()*2-1; }
+    const s=ctx.createBufferSource(); s.buffer=_noise;
+    const hp=ctx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=7000;
+    const g=ctx.createGain(); g.gain.setValueAtTime(level,t); g.gain.exponentialRampToValueAtTime(0.0001,t+0.05);
+    s.connect(hp); hp.connect(g); g.connect(drumBus); s.start(t); s.stop(t+0.06);
   }
-  function blip(t, freq){
-    envNote(freq, t, 0.18, 0.07, 'triangle');
-  }
-  function tick(){
-    if(!ctx){ scheduled=false; return; }
-    const now=ctx.currentTime;
-    const interval = 1.4 - intensity*1.05; // 1.4s chill → 0.35s frantic
-    const noteIdx = Math.floor(Math.random()*(intensity<0.5?5:SCALE.length));
-    const f=SCALE[noteIdx];
 
-    if(beat%4===0){
-      chime(now, f);
-      if(intensity>0.35){ bass(now, BASS_ROOT*(intensity>0.7?2:1)); }
-    } else if(beat%2===0){
-      if(intensity>0.25) chime(now, f);
-    } else {
-      if(intensity>0.55) blip(now, f*2);
+  function scheduleStep(gs, t){
+    const ch=PROG[Math.floor(gs/SPB)%PROG.length];
+    const s=gs%SPB, I=intensity;
+    if(s===0) padChord(t, ch.chord);                          // chord pad once per bar
+    // bass pulse: quarters when calm, eighths (with offbeat fifths) when busy
+    const bassSteps = I>0.45 ? [0,2,4,6,8,10,12,14] : [0,4,8,12];
+    if(bassSteps.includes(s)) bassHit(t, (I>0.45 && s%4===2) ? ch.bass*1.5 : ch.bass, s%8===0);
+    // arpeggio: density scales with intensity (8th-bar → every 16th)
+    const arpEvery = I>0.7 ? 1 : (I>0.4 ? 2 : (I>0.12 ? 4 : 8));
+    if(s%arpEvery===0){ const tn=ch.chord; arpPluck(t, tn[gs%tn.length]*(I>0.6?2:1), I>0.5); }
+    // lead melody: sparse syncopated accents, more frequent + sure when intense
+    if(s===0||s===6||s===10||s===12){
+      if(Math.random() < 0.12 + I*0.5){
+        meloIdx = Math.max(0, Math.min(ch.lead.length-1, meloIdx + (Math.random()<0.5?-1:1)));
+        leadNote(t, ch.lead[meloIdx]);
+      }
     }
-    if(intensity>0.6 && Math.random()<0.3) blip(now+interval*0.5, SCALE[(noteIdx+2)%SCALE.length]*2);
-    beat++;
+    // drums fade in with action
+    if(I>0.08){
+      if((I>0.45?[0,4,8,12]:[0,8]).includes(s)) kick(t, 0.25+0.5*I);
+      if(I>0.5 && (s===2||s===6||s===10||s===14)) hat(t, 0.06+0.08*I);
+    }
+  }
 
-    intensity += (target - intensity)*0.08;
-    // pad volume follows intensity
-    if(pad){ pad.gain.cancelScheduledValues(now); pad.gain.linearRampToValueAtTime(0.03 + intensity*0.10, now+0.3); }
-
-    setTimeout(tick, interval*1000);
+  function scheduler(){
+    if(!running || !ctx) return;
+    intensity += (target-intensity)*0.06;
+    const now=ctx.currentTime;
+    padBus.gain.setTargetAtTime(0.14+0.12*intensity, now, 0.4);
+    leadBus.gain.setTargetAtTime(0.05+0.20*intensity, now, 0.4);
+    drumBus.gain.setTargetAtTime(0.7*intensity, now, 0.4);
+    while(nextTime < now + LOOKAHEAD){ scheduleStep(gstep, nextTime); gstep++; nextTime += STEP; }
+    timer=setTimeout(scheduler, TICK);
   }
   function start(){
-    ensure();
-    if(ctx && ctx.state==='suspended') ctx.resume();
-    if(!scheduled){ scheduled=true; setTimeout(tick, 200); }
+    ensure(); if(!ctx) return;
+    if(ctx.state==='suspended') ctx.resume();
+    if(master) master.gain.setTargetAtTime(baseVol*userVol, ctx.currentTime, 0.2);
+    if(!running){ running=true; nextTime=ctx.currentTime+0.1; scheduler(); }
   }
   ['pointerdown','keydown','touchstart'].forEach(ev=>document.addEventListener(ev, start, {once:true, passive:true}));
   return {
     start,
-    setIntensity(v){ target=Math.max(0, Math.min(1, v)); },
-    setVolume(v){ if(master) master.gain.value = 0.16 * Math.max(0, Math.min(1, v)); },
-    stop(){ if(pad) pad.gain.value=0; target=0; }
+    setIntensity(v){ target=Math.max(0, Math.min(1, v||0)); },
+    setVolume(v){ userVol=Math.max(0, Math.min(1, v)); if(master) master.gain.value=baseVol*userVol; },
+    stop(){ running=false; if(timer){ clearTimeout(timer); timer=null; } if(master&&ctx) master.gain.setTargetAtTime(0, ctx.currentTime, 0.3); }
   };
 })();
 
