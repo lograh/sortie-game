@@ -272,10 +272,6 @@
     <div id="debugLog" style="flex:1;overflow:auto;padding:6px 8px;white-space:pre-wrap;word-break:break-word;line-height:1.35"></div>
   </div>
 
-  <div id="vote" class="panel"><span id="voteText"></span>
-    <button class="good" onclick="Game.castVote(true)">Yes</button>
-    <button class="bad" onclick="Game.castVote(false)">No</button>
-  </div>
 
   <div id="lobby" class="panel">
     <h3 style="display:flex;align-items:center;gap:10px">
@@ -328,9 +324,10 @@
               <option value="5">5 — orange</option>
             </select></div>
           <div class="row">
-            <button onclick="Game.startSolo()">Start Game</button>
+            <button id="startGameBtn" onclick="Game.startSolo()">Start Game</button>
             <button onclick="Game.startTutorial()">Tutorial</button>
           </div>
+          <div class="row" id="roundWaitBanner" style="display:none;color:var(--ui-warn,#fb3);font-size:12px">⏳ A round is in progress — you'll join when it ends.</div>
           <hr>
           <div class="row dim">LAN / Internet — share a room code. One player taps Create Room and sends the code (or link) to everyone. Each friend types the code and taps Join — or just opens the link. Everyone in the same room auto-connects.</div>
           <div class="row">Room
@@ -855,7 +852,6 @@ const Game=(()=>{
     boostHeld:false,
     selectedCell:null, // {x,y} for tap-to-swap
     gunPopover:null,   // {x,y} for gun config popover
-    pendingVote:null, // {voterIds:Set, voted:Map(id->bool), candidate:{id,name}}
     tick:0,
     lastT:performance.now(),
   };
@@ -1761,6 +1757,10 @@ const Game=(()=>{
       }
     }
     if(m.kind==='state'){
+      // A 'state' broadcast means the sender is actively in a round. If we're sitting in the
+      // lobby, that tells us a round is in progress elsewhere — note when we last heard one so
+      // the lobby can show "round in progress, please wait" (cleared once they stop arriving).
+      if(state.mode==='lobby') state._lastRemoteStateAt = performance.now();
       const p=state.players[from];
       if(p){
         p.x=m.x; p.y=m.y; p.vx=m.vx; p.vy=m.vy; p.rot=m.rot; p.hp=m.hp; p.maxHp=m.maxHp; p.team=m.team; p.alive=m.alive; p.docked=!!m.docked;
@@ -1784,10 +1784,6 @@ const Game=(()=>{
       if(!state.asteroids.find(a=>a.id===m.a.id)) state.asteroids.push(m.a);
     } else if(m.kind==='chat'){
       chatLine((state.players[from]?.name||from)+': '+m.text);
-    } else if(m.kind==='join_req'){
-      askVote(from,m.name);
-    } else if(m.kind==='join_vote'){
-      handleVoteCast({candidate:m.candidate,voter:from,yes:m.yes});
     } else if(m.kind==='team'){
       const p=state.players[from]; if(p) p.team=m.team;
     } else if(m.kind==='rtt_ping'){
@@ -2011,49 +2007,32 @@ const Game=(()=>{
       const ago = last ? (now - last) : (now - since);
       lp._stale = (now - since > PEER_LOBBY_GRACE_MS) && (ago > PEER_LOBBY_STALE_MS);
     }
-    if(state.mode==='lobby' && typeof refreshLobbyMP==='function') refreshLobbyMP();
+    if(state.mode==='lobby'){
+      updateRoundWaitUI(now);
+      if(typeof refreshLobbyMP==='function') refreshLobbyMP();
+    }
   }
   setInterval(tickPeerHealth, 1000);
 
-  /* -------- Voting -------- */
-  function askVote(candidateId,candidateName){
-    if(state.pendingVote && state.pendingVote.candidate.id===candidateId) return;
-    state.pendingVote={candidate:{id:candidateId,name:candidateName||'P-'+candidateId.slice(0,3)},voted:new Map(),deadline:performance.now()+15000};
-    const v=document.getElementById('vote');
-    document.getElementById('voteText').textContent='Allow "'+state.pendingVote.candidate.name+'" to join?';
-    v.style.display='block';
-  }
-  function castVote(yes){
-    if(!state.pendingVote) return;
-    state.pendingVote.voted.set(state.me.id,yes);
-    Net.broadcast({kind:'join_vote',candidate:state.pendingVote.candidate.id,yes});
-    evaluateVote();
-  }
-  function handleVoteCast(p){
-    if(!state.pendingVote || state.pendingVote.candidate.id!==p.candidate) return;
-    state.pendingVote.voted.set(p.voter,p.yes);
-    evaluateVote();
-  }
-  function evaluateVote(){
-    if(!state.pendingVote) return;
-    const totalActivePlayers=Object.keys(state.players).length+1; // self
-    const needed=totalActivePlayers; // unanimous yes from current players
-    let yes=0,no=0;
-    state.pendingVote.voted.forEach(v=>{ if(v) yes++; else no++; });
-    if(no>0){
-      // reject
-      document.getElementById('vote').style.display='none';
-      state.pendingVote=null;
-    } else if(yes>=needed){
-      const cid=state.pendingVote.candidate.id;
-      const cname=state.pendingVote.candidate.name;
-      if(!state.players[cid]) state.players[cid]=spawnPlayer(cid,cname,0);
-      Net.broadcast({kind:'admit',target:cid});
-      document.getElementById('vote').style.display='none';
-      state.pendingVote=null;
-      chatLine('* '+cname+' joined the game');
+  // "Round in progress, please wait": if peers are mid-round we keep receiving their 'state'
+  // broadcasts. While we sit in the lobby and those are still arriving, block Start and show a
+  // banner. Once the in-game players finish and return to the lobby the broadcasts stop, the
+  // banner clears, and they can Start (or get pulled into the next round via 'start_game').
+  function updateRoundWaitUI(now){
+    now = now || performance.now();
+    const active = (now - (state._lastRemoteStateAt||0)) < 3000;
+    const btn = document.getElementById('startGameBtn');
+    const banner = document.getElementById('roundWaitBanner');
+    if(active !== state.remoteRoundActive){
+      const wasActive = state.remoteRoundActive;
+      state.remoteRoundActive = active;
+      if(active) addLobbyChatLine('* a round is in progress — please wait for it to finish','sys');
+      else if(wasActive===true) addLobbyChatLine('* the round ended — you can Start now','sys');
     }
+    if(btn){ btn.disabled = active; btn.style.opacity = active ? 0.5 : ''; }
+    if(banner) banner.style.display = active ? '' : 'none';
   }
+
 
   /* -------- Ship design library (debounced snapshots; bots can adopt) -------- */
   function layoutCost(g){
@@ -3734,11 +3713,6 @@ const Game=(()=>{
       if(!bad){ state.asteroids.push(a); Net.broadcast({kind:'ast_sync',a}); }
     }
 
-    // pending vote timeout
-    if(state.pendingVote && performance.now()>state.pendingVote.deadline){
-      document.getElementById('vote').style.display='none';
-      state.pendingVote=null;
-    }
 
     if(me) revealAround(me.x,me.y);
 
@@ -5486,13 +5460,11 @@ const Game=(()=>{
     state.pendingStart = null;
     state.killGoal = 0; state.roundEndTick = 0;
     state.nearPlatform = null;
-    state.pendingVote = null;
     // lobbyPeers / directRoutes left intact — the Trystero mesh persists across matches.
     document.body.classList.add('mode-lobby');
     document.getElementById('lobby').style.display = 'block';
     document.getElementById('endscreen').style.display = 'none';
     document.getElementById('hub').style.display = 'none';
-    document.getElementById('vote').style.display = 'none';
     document.getElementById('roundTimer').style.display = 'none';
     document.getElementById('topbar')?.classList.remove('active');
     if(typeof refreshLobbyMP === 'function') refreshLobbyMP();
@@ -5742,6 +5714,10 @@ const Game=(()=>{
   }
 
   function startSolo(){
+    if(state.remoteRoundActive){
+      addLobbyChatLine('* a round is still in progress — please wait for it to finish','sys');
+      return;
+    }
     state.me.name=document.getElementById('pname').value||'Solo';
     try{ localStorage.setItem('sortie_name_v1', state.me.name); }catch(_){}
     WORLD = parseInt(document.getElementById('worldSize')?.value)||16000;
@@ -6134,7 +6110,7 @@ const Game=(()=>{
 
   return {
     startSolo,startTutorial,endTutorial,createRoom,joinRoomFromInput,copyRoomLink,leaveMesh,resetForNextRound,toggleDebug,dbgInspect,dbgClear,dbgCopy,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,openSettings,closeSettings,startBindingCapture,resetBindings,
-    castVote,sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
+    sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
     lobbySetPlace,lobbyBuilderClick,lobbyGunCfg,lobbySaveDesign,lobbyResetDesign,lobbyLoadDesign,
   };
 })();
