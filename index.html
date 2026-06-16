@@ -1387,47 +1387,139 @@ const Game=(()=>{
   // (NAT/ICE quirks, Safari being finicky) silently stay disconnected with no fallback. So we flood
   // every message across the mesh — a node re-sends unseen messages to its OTHER neighbors, letting
   // peers who lack a direct link still talk through a common one. `_seenMids` dedups (loop-proof).
+  // We ALSO repair the holes (see below): a node stands up its own WebRTC link to a relay-only peer,
+  // signaling offer/answer over this same relay. Those repair links count as neighbors too.
   let _msgSeq = 0;
   const _seenMids = new Set();
+  const _repairLinks = {};   // sortieId -> {pc, dc, status:'connecting'|'open', initiator}
   function _freshMid(){ return state.me.id + ':' + (++_msgSeq); }
   function _noteMid(mid){ _seenMids.add(mid); if(_seenMids.size>6000){ const it=_seenMids.values().next().value; _seenMids.delete(it); } }
-  function relayToOthers(data, sourceTpeer){
-    if(!_trysteroRoom || !_trysteroSend) return;
-    let peers={}; try{ peers=_trysteroRoom.getPeers()||{}; }catch(_){ return; }
-    const copy = Object.assign({}, data, { _hops: (data._hops||0)+1 });
-    for(const tp in peers){ if(tp===sourceTpeer) continue; try{ _trysteroSend(copy, tp); }catch(_){} }
+  // Send `data` (as-is, caller sets _hops) to every neighbor link except `exceptKey`
+  // (a Trystero peerId, or 'repair:'+sid for a manual link).
+  function sendToLinks(data, exceptKey){
+    if(_trysteroRoom && _trysteroSend){
+      let peers={}; try{ peers=_trysteroRoom.getPeers()||{}; }catch(_){ peers={}; }
+      for(const tp in peers){ if(tp===exceptKey) continue; try{ _trysteroSend(data, tp); }catch(_){} }
+    }
+    for(const sid in _repairLinks){
+      const l=_repairLinks[sid];
+      if(l.status==='open' && l.dc && ('repair:'+sid)!==exceptKey){ try{ l.dc.send(JSON.stringify(data)); }catch(_){} }
+    }
   }
-  // A peer is DIRECT if we have a live Trystero data channel to it; otherwise we only reach it
-  // through the gossip relay (a broken/missing direct link — Trystero failed that pair).
+  function relayToOthers(data, srcKey){ sendToLinks(Object.assign({}, data, {_hops:(data._hops||0)+1}), srcKey); }
+  // Unified ingress for messages from any link (Trystero or repair). Dedup → relay → route(_to) → handle.
+  function ingest(data, srcKey){
+    if(data && data._mid){
+      if(_seenMids.has(data._mid)) return;
+      _noteMid(data._mid);
+      relayToOthers(data, srcKey);
+    }
+    const fromTrystero = srcKey && String(srcKey).indexOf('repair:')!==0;
+    // Learn the direct Trystero route only from first-hop (direct) Trystero messages.
+    if(data && data.from && data.from!==state.me.id && fromTrystero && (data._hops||0)===0){
+      trysteroToSortie[srcKey]=data.from; sortieToTrystero[data.from]=srcKey;
+    }
+    if(data && data._to && data._to!==state.me.id) return;   // relayed past us; not ours to process
+    const sz=(()=>{ try{ return JSON.stringify(data).length; }catch(_){ return '?'; } })();
+    dbg('RX ←'+String(srcKey).slice(0,6)+((data&&data._hops)?('+'+data._hops):'')+' : '+(data&&data.kind||'?')+' from='+(data&&data.from||'?')+' ('+sz+'b)');
+    const viaKey = fromTrystero ? srcKey : (sortieToTrystero[data && data.from]||undefined);
+    try{ handleNetMsg(data&&data.from, data, viaKey); }catch(err){ console.error('[sortie] handleNetMsg', err); dbg('handleNetMsg threw: '+(err&&err.message)); }
+  }
+  // A peer is DIRECT if we have a live data channel to it — Trystero's, or a manual repair link.
   function isDirectPeer(sid){
+    if(_repairLinks[sid] && _repairLinks[sid].status==='open') return true;
     const t=sortieToTrystero[sid]; if(!t || !_trysteroRoom) return false;
     try{ return !!((_trysteroRoom.getPeers()||{})[t]); }catch(_){ return false; }
   }
   function relayOnlyPeerIds(){
     return Object.keys(state.lobbyPeers).filter(id => id!==state.me.id && !isDirectPeer(id));
   }
-  // Force a fresh round of WebRTC negotiation by leaving and re-joining the room — Trystero
-  // re-announces our presence so every peer re-attempts a direct connection to us (repairs
-  // transient failures; a fundamentally unconnectable pair still needs TURN).
+
+  /* -------- Mesh repair: stand up our OWN WebRTC link to a relay-only peer, signaling the
+     offer/answer over the gossip relay (which already reaches them through a common neighbor).
+     This is plain browser WebRTC — independent of Trystero — so it gets a fresh ICE attempt that
+     can succeed where Trystero's gave up. Non-trickle (wait for ICE gathering, embed candidates in
+     the SDP) keeps signaling to two messages. Lower sortie id initiates (no glare). -------- */
+  const REPAIR_ICE = { iceServers:[ {urls:'stun:stun.l.google.com:19302'}, {urls:'stun:stun1.l.google.com:19302'} ] };
+  function _waitIceComplete(pc){
+    return new Promise(res=>{
+      if(pc.iceGatheringState==='complete') return res();
+      const done=()=>{ if(pc.iceGatheringState==='complete'){ pc.removeEventListener('icegatheringstatechange',done); clearTimeout(t); res(); } };
+      const t=setTimeout(()=>{ pc.removeEventListener('icegatheringstatechange',done); res(); }, 3500);  // cap the wait
+      pc.addEventListener('icegatheringstatechange', done);
+    });
+  }
+  function _wireRepairDC(sid, dc){
+    dc.onopen=()=>{ if(_repairLinks[sid]){ _repairLinks[sid].status='open'; } dbg('repair link OPEN ↔ '+sid.slice(0,4));
+      addLobbyChatLine('* direct link repaired ↔ '+((state.lobbyPeers[sid]&&state.lobbyPeers[sid].name)||sid.slice(0,4)),'sys');
+      if(typeof refreshLobbyMP==='function') refreshLobbyMP(); };
+    dc.onmessage=ev=>{ let d; try{ d=JSON.parse(ev.data); }catch(_){ return; } ingest(d, 'repair:'+sid); };
+    dc.onclose=()=>teardownRepair(sid);
+  }
+  function teardownRepair(sid){
+    const l=_repairLinks[sid]; if(!l) return;
+    try{ l.dc&&l.dc.close(); }catch(_){}
+    try{ l.pc.close(); }catch(_){}
+    delete _repairLinks[sid];
+    if(typeof refreshLobbyMP==='function') refreshLobbyMP();
+  }
+  function teardownAllRepairs(){ for(const sid in _repairLinks) teardownRepair(sid); }
+  async function startRepair(sid){
+    if(_repairLinks[sid]) return;
+    try{
+      const pc=new RTCPeerConnection(REPAIR_ICE);
+      const dc=pc.createDataChannel('repair');
+      _repairLinks[sid]={pc, dc, status:'connecting', initiator:true};
+      _wireRepairDC(sid, dc);
+      pc.oniceconnectionstatechange=()=>{ const s=pc.iceConnectionState; if(s==='failed'||s==='closed') teardownRepair(sid); };
+      dbg('repair: offering ↔ '+sid.slice(0,4));
+      await pc.setLocalDescription(await pc.createOffer());
+      await _waitIceComplete(pc);
+      Net.sendTo(sid, {kind:'repair_offer', sdp: JSON.stringify(pc.localDescription)});
+    }catch(e){ dbg('repair offer failed: '+(e&&e.message)); teardownRepair(sid); }
+  }
+  async function onRepairOffer(from, m){
+    try{
+      if(_repairLinks[from] && _repairLinks[from].status==='open') return;
+      if(_repairLinks[from]) teardownRepair(from);   // stale half-open → restart
+      const off=JSON.parse(m.sdp);
+      const pc=new RTCPeerConnection(REPAIR_ICE);
+      _repairLinks[from]={pc, dc:null, status:'connecting', initiator:false};
+      pc.ondatachannel=e=>{ if(_repairLinks[from]){ _repairLinks[from].dc=e.channel; } _wireRepairDC(from, e.channel); };
+      pc.oniceconnectionstatechange=()=>{ const s=pc.iceConnectionState; if(s==='failed'||s==='closed') teardownRepair(from); };
+      await pc.setRemoteDescription(off);
+      await pc.setLocalDescription(await pc.createAnswer());
+      await _waitIceComplete(pc);
+      Net.sendTo(from, {kind:'repair_answer', sdp: JSON.stringify(pc.localDescription)});
+    }catch(e){ dbg('repair answer failed: '+(e&&e.message)); teardownRepair(from); }
+  }
+  async function onRepairAnswer(from, m){
+    const l=_repairLinks[from]; if(!l || !l.initiator) return;
+    try{ await l.pc.setRemoteDescription(JSON.parse(m.sdp)); }catch(e){ dbg('repair setRemote(answer) failed: '+(e&&e.message)); teardownRepair(from); }
+  }
+  // Last-resort full reset: leave and rejoin so Trystero re-attempts every direct connection.
   function reconnectRoom(reason){
     if(!_currentRoomCode){ setLobbyStatus('Not in a room.'); return; }
     const code=_currentRoomCode;
-    addLobbyChatLine('* '+(reason||'reconnecting')+' — forcing fresh peer negotiation…','sys');
+    addLobbyChatLine('* '+(reason||'reconnecting')+' — leaving and rejoining to renegotiate all links…','sys');
     leaveTrysteroRoom(true);
     setTimeout(()=>{ joinTrysteroRoom(code); }, 500);
   }
-  // Conservative self-heal: if a known peer stays relay-only too long, force one fresh negotiation.
-  // Staggered by our id (so peers don't reconnect in unison), 90s cooldown, max 3 tries per episode
-  // — then we give up and just live on the relay (a truly unconnectable pair needs TURN, not retries).
-  let _relayOnlySince=0, _lastAutoReconnect=0, _autoReconnects=0;
-  function maybeAutoReconnect(now){
-    if(!_trysteroRoom){ _relayOnlySince=0; return; }
-    if(relayOnlyPeerIds().length===0){ _relayOnlySince=0; _autoReconnects=0; return; }
-    if(!_relayOnlySince) _relayOnlySince=now;
-    const wait = 30000 + (hashKey(state.me.id)%12000);
-    if(now-_relayOnlySince>wait && now-_lastAutoReconnect>90000 && _autoReconnects<3){
-      _lastAutoReconnect=now; _autoReconnects++;
-      reconnectRoom('auto-repair ('+_autoReconnects+'/3): a peer link is relay-only');
+  // Auto-repair: for each relay-only peer, the lower-id side stands up a manual link (cheap, targeted,
+  // non-disruptive — retried every 15s). Far gentler than leave/rejoin; the relay covers us meanwhile.
+  const _repairCooldown={}, _repairTries={};
+  function maybeRepairLinks(now){
+    if(!_trysteroRoom) return;
+    const relayOnly=new Set(relayOnlyPeerIds());
+    for(const sid in _repairTries){ if(!relayOnly.has(sid)){ delete _repairTries[sid]; delete _repairCooldown[sid]; } }  // reset once direct/gone
+    for(const sid of relayOnly){
+      if(_repairLinks[sid]) continue;                 // already connecting/open
+      if(state.me.id >= sid) continue;                // deterministic: lower id offers, higher answers
+      if((_repairCooldown[sid]||0) > now) continue;   // backoff between attempts
+      if((_repairTries[sid]||0) >= 6) continue;       // gave up after 6 tries — live on the relay
+      _repairTries[sid]=(_repairTries[sid]||0)+1;
+      _repairCooldown[sid]=now+15000;
+      startRepair(sid);
     }
   }
   let _getRelaySockets = null;         // Trystero export: returns {url: WebSocket} of broker sockets
@@ -1697,14 +1789,12 @@ const Game=(()=>{
     // mesh-view/gossip features. (The old manual-handshake `peers`/`routes` maps are gone.)
     directRoutes:{},
     onMsg:(from,m)=>handleNetMsg(from,m),
-    broadcast(m){ if(_trysteroSend){ const mid=_freshMid(); _noteMid(mid); try{ _trysteroSend({from:state.me.id, _mid:mid, _hops:0, ...m}); }catch(_){} } },
-    broadcastAs(asId,m){ if(_trysteroSend){ const mid=_freshMid(); _noteMid(mid); try{ _trysteroSend({from:asId, _mid:mid, _hops:0, ...m}); }catch(_){} } },
+    broadcast(m){ const mid=_freshMid(); _noteMid(mid); sendToLinks({from:state.me.id, _mid:mid, _hops:0, ...m}, null); },
+    broadcastAs(asId,m){ const mid=_freshMid(); _noteMid(mid); sendToLinks({from:asId, _mid:mid, _hops:0, ...m}, null); },
     sendTo(id,m){
-      if(!_trysteroSend) return;
-      const mid=_freshMid(); _noteMid(mid);
-      const payload={from:state.me.id, _mid:mid, _hops:0, _to:id, ...m};
       // Flood (tagged with _to): reaches `id` whether it's a direct neighbor or only relay-reachable.
-      try{ _trysteroSend(payload); }catch(_){}
+      const mid=_freshMid(); _noteMid(mid);
+      sendToLinks({from:state.me.id, _mid:mid, _hops:0, _to:id, ...m}, null);
     },
   };
 
@@ -1782,24 +1872,7 @@ const Game=(()=>{
     dbg('action API: '+(Array.isArray(action)?'tuple':'object'));
     registerRecv((data, meta) => {
       const tpeer = (meta && typeof meta === 'object') ? meta.peerId : meta;
-      // Gossip relay: drop messages we've already seen (loop prevention), otherwise re-flood to our
-      // other neighbors so peers without a direct link still receive it.
-      if(data && data._mid){
-        if(_seenMids.has(data._mid)) return;
-        _noteMid(data._mid);
-        relayToOthers(data, tpeer);
-      }
-      // Only learn the direct route from a first-hop message (a relayed one's `tpeer` is the relayer,
-      // not the origin — mapping it would misroute sendTo).
-      if(data && data.from && data.from !== state.me.id && tpeer && (data._hops||0)===0){
-        trysteroToSortie[tpeer] = data.from;
-        sortieToTrystero[data.from] = tpeer;
-      }
-      // A targeted message addressed to someone else: we relayed it above; don't process it locally.
-      if(data && data._to && data._to !== state.me.id) return;
-      const sz = (()=>{ try{ return JSON.stringify(data).length; }catch(_){ return '?'; } })();
-      dbg('RX ← '+String(tpeer).slice(0,6)+(data&&(data._hops||0)?('+'+data._hops):'')+' : '+(data&&data.kind||'?')+' from='+(data&&data.from||'?')+' ('+sz+'b)');
-      try { handleNetMsg(data.from, data, tpeer); } catch(err){ console.error('[sortie] handleNetMsg', err); dbg('handleNetMsg threw: '+err.message); }
+      ingest(data, tpeer);   // unified ingress: dedup → relay → route(_to) → handleNetMsg
     });
 
     room.onPeerJoin = (tpeer) => {
@@ -1891,6 +1964,7 @@ const Game=(()=>{
   function leaveTrysteroRoom(quiet){
     stopRoomDiag();
     disableVoice(true);   // release mic + tear down peer audio before dropping the room
+    teardownAllRepairs(); // close any manual repair links
     try { _trysteroRoom?.leave(); } catch(_){}
     _trysteroRoom=null; _trysteroSend=null; _currentRoomCode=null; _getRelaySockets=null;
     for(const k in trysteroToSortie) delete trysteroToSortie[k];
@@ -2168,6 +2242,10 @@ const Game=(()=>{
       applyBracketMatch(from, m);          // host assigned me a tournament match
     } else if(m.kind==='bracket_result'){
       onBracketResult(from, m);            // (host only) a match winner was reported
+    } else if(m.kind==='repair_offer'){
+      onRepairOffer(from, m);              // someone wants to stand up a direct link to us
+    } else if(m.kind==='repair_answer'){
+      onRepairAnswer(from, m);
     } else if(m.kind==='bracket_state'){
       applyBracketState(from, m);          // mirror the host's authoritative bracket
     } else if(m.kind==='rtt_ping'){
@@ -2402,9 +2480,9 @@ const Game=(()=>{
       const ago = last ? (now - last) : (now - since);
       lp._stale = (now - since > PEER_LOBBY_GRACE_MS) && (ago > PEER_LOBBY_STALE_MS);
     }
+    maybeRepairLinks(now);   // self-heal broken direct links via manual WebRTC (any mode)
     if(state.mode==='lobby'){
       updateRoundWaitUI(now);
-      maybeAutoReconnect(now);
       if(typeof refreshLobbyMP==='function') refreshLobbyMP();
     }
   }
