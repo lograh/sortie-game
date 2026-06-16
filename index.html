@@ -2003,6 +2003,11 @@ const Game=(()=>{
   const PEER_LAGGY_MS = 2500;     // brief silence — show laggy marker, start gossip
   const PEER_DROP_MS  = 30000;    // sustained silence — declare DNF
   const PEER_GOSSIP_INTERVAL_MS = 5000;
+  // Lobby liveness: a data channel opening doesn't prove we can hear the peer back.
+  // Heartbeats arrive ~every 2s; if we go quiet this long past an initial grace window,
+  // treat the link as unconfirmed (likely one-way) rather than claiming a confident ✓.
+  const PEER_LOBBY_GRACE_MS = 6000;   // don't judge a peer for the first few seconds
+  const PEER_LOBBY_STALE_MS = 6000;   // no inbound this long → "no reply"
 
   // Surviving humans, including self — used for deterministic adopter election.
   function aliveHumanIds(){
@@ -2094,7 +2099,11 @@ const Game=(()=>{
   let _lastMeshViewSent = 0;
   function tickPeerHealth(){
     const now = performance.now();
-    const havePeers = Object.keys(Net.peers).length>0;
+    // Count Trystero peers, not the legacy manual-handshake Net.peers map (always empty
+    // under Trystero) — otherwise the lobby heartbeat never fires and peerLastSeen never
+    // updates, so we can't tell a live peer from a one-way/dead one.
+    let havePeers = Object.keys(Net.peers).length>0;
+    if(!havePeers && _trysteroRoom){ try{ havePeers = Object.keys(_trysteroRoom.getPeers()||{}).length>0; }catch(_){} }
     // Heartbeat keeps peerLastSeen fresh even in the silent lobby.
     if(havePeers && now-_lastHeartbeatSent > 2000){
       _lastHeartbeatSent = now;
@@ -2140,6 +2149,14 @@ const Game=(()=>{
       }
     }
     if(pendingChanged && typeof refreshLobbyMP==='function') refreshLobbyMP();
+    // Lobby liveness: flag peers we can't actually hear back from (one-way links).
+    for(const id in state.lobbyPeers){
+      const lp = state.lobbyPeers[id];
+      const since = lp._since || (lp._since = now);
+      const last = state.peerLastSeen[id];
+      const ago = last ? (now - last) : (now - since);
+      lp._stale = (now - since > PEER_LOBBY_GRACE_MS) && (ago > PEER_LOBBY_STALE_MS);
+    }
     // The mesh-status display can change as new mesh_views arrive; refresh periodically.
     if(state.mode==='lobby' && typeof refreshLobbyMP==='function') refreshLobbyMP();
   }
@@ -6412,12 +6429,22 @@ const Game=(()=>{
     const myName = (document.getElementById('pname')?.value || state.me.name || 'Solo');
     const peerIds = Object.keys(state.lobbyPeers);
     const parts = [`<span class="you">${esc(myName)} (you)</span>`];
+    let confirmed = 0;
     for(const id of peerIds){
-      parts.push(esc(state.lobbyPeers[id].name||id.slice(0,4)) + ' <span style="color:var(--ui-good-bright)">✓</span>');
+      const lp = state.lobbyPeers[id];
+      const nm = esc(lp.name||id.slice(0,4));
+      if(lp._stale){
+        parts.push(nm + ' <span style="color:var(--ui-warn,#fb3)" title="Data channel is open but nothing is coming back from this peer — the link is likely one-way (e.g. a phone on cellular behind CGNAT). They may not see the game.">⚠ no reply</span>');
+      } else {
+        confirmed++;
+        parts.push(nm + ' <span style="color:var(--ui-good-bright)">✓</span>');
+      }
     }
     let html = 'Players: ' + parts.join(', ');
     if(_currentRoomCode){
-      html += '<br><span class="dim" style="font-size:11px">Room <b>'+esc(_currentRoomCode)+'</b> · '+(peerIds.length+1)+' connected</span>';
+      const unconfirmed = peerIds.length - confirmed;
+      html += '<br><span class="dim" style="font-size:11px">Room <b>'+esc(_currentRoomCode)+'</b> · '+(confirmed+1)+' connected'
+        + (unconfirmed>0 ? (' · <span style="color:var(--ui-warn,#fb3)">'+unconfirmed+' one-way</span>') : '')+'</span>';
     }
     el.innerHTML = html;
     // Leave button visible only while actually in a room.
