@@ -246,6 +246,7 @@
     <button id="dockBtn" onclick="Game.toggleHub()">⚓ Dock</button>
     <button id="mapBtn" onclick="Game.toggleMap()">🗺 Map</button>
     <button id="chatBtn" onclick="Game.toggleChatMenu()">💬 Chat</button>
+    <button id="bracketBtn" onclick="Game.toggleBracketPanel()" style="display:none">🏆 Bracket</button>
     <button id="settingsBtn" onclick="Game.openSettings()" title="Settings">⚙</button>
   </div>
 
@@ -269,6 +270,10 @@
   <div id="endscreen" class="panel">
     <h3>Round Over</h3>
     <div class="body" id="endBody"></div>
+  </div>
+  <div id="bracketPanel" class="panel" style="display:none;left:50%;top:50%;transform:translate(-50%,-50%);width:min(720px,94vw);max-height:88vh;z-index:1200;overflow:auto">
+    <h3>Tournament <button onclick="Game.toggleBracketPanel()" style="float:right;font-size:11px;padding:3px 8px;min-height:0">Close</button></h3>
+    <div class="body" id="bracketBody" style="font-size:12px"></div>
   </div>
   <div id="changelogModal" class="panel" style="display:none;left:50%;top:50%;transform:translate(-50%,-50%);width:min(560px,92vw);max-height:80vh;z-index:10">
     <h3>Recent changes <button onclick="Game.toggleChangelog()" style="float:right;font-size:11px;padding:3px 8px;min-height:0">Close</button></h3>
@@ -5977,6 +5982,7 @@ const Game=(()=>{
   function exitBracket(){
     state.bracket=null; state.bracketCarry=null; state.bracketOpponentId=null; state.bracketMatchKey=null;
     state.bracketHostId=null; state.bracketStandby=false; state.bracketAssign=null;
+    try{ document.getElementById('bracketPanel').style.display='none'; const bb=document.getElementById('bracketBtn'); if(bb) bb.style.display='none'; }catch(_){}
     resetForNextRound();
   }
 
@@ -6027,24 +6033,105 @@ const Game=(()=>{
     sendBracketResult(matchKey, winnerId);               // …then report (host may immediately start my next match if it's ready)
   }
 
-  // Between matches: clear the arena, keep the tournament + carried loadout, wait for the next
-  // assignment (and let the player dock/upgrade — wired in the UI stage).
+  // Between matches: a peaceful sandbox docked at your hub, so the real hub economy works and you
+  // can spend carried credits/materials before the next match. No enemies, no timer; the next
+  // match (assigned by the host) auto-starts via startBracketMatch. Keeps state.bracket + carry.
   function enterStandby(){
     state.bracketStandby=true;
     state.bracketMatchKey=null;
     state.bracketOpponentId=null;
     state.bracketAssign=null;
     state.roundEnded=false;
-    state.mode='lobby';
-    state.players={}; state.bullets=[]; state.pickups=[]; state.particles=[];
-    state.asteroids=[]; state.platforms=[]; state.nebulae=[]; state.gravWells=[];
-    state.stars=[]; state.hits=[]; state.pings=[];
+    state.docked=false; document.body.classList.remove('docked');
+    state.bullets=[]; state.pickups=[]; state.particles=[]; state.hits=[]; state.pings=[];
     state.aiIds=[]; state.pirateIds=[]; state.traderIds=[];
     state.kingActive=false; state.piratesKilled=0; state.combatHeat=0;
-    state.explored=new Set();
+    state.explored=new Set(); state.roundEndTick=0; state.killGoal=0; state.gameMode='deathmatch';
+    state.platforms=[]; genWorld((Math.floor(Math.random()*0x7fffffff))>>>0 || 1);
+    state.asteroids=[]; state.nebulae=[]; state.gravWells=[];   // hazard-free prep area
+    state.players={};
+    const p=spawnPlayer(state.me.id, state.me.name, 0);
+    const hub=state.platforms[0];
+    if(hub){ p.x=hub.x; p.y=hub.y; }
+    p.spawnX=p.x; p.spawnY=p.y; p.vx=0; p.vy=0; p.grace=999999; p.alive=true;
+    state.players[state.me.id]=p;
+    restoreBracketCarry(p);                  // bring forward credits/ship/materials
+    state.nearPlatform=hub||null;            // so they can ⚓ Dock to shop
+    state.mode='playing';
     document.body.classList.remove('mode-lobby');
-    try{ document.getElementById('lobby').style.display='none'; document.getElementById('roundTimer').style.display='none'; }catch(_){}
-    if(typeof renderBracketView==='function') renderBracketView();
+    try{
+      document.getElementById('lobby').style.display='none';
+      document.getElementById('roundTimer').style.display='none';
+      const tb=document.getElementById('topbar'); if(tb) tb.style.display='';
+      const bb=document.getElementById('bracketBtn'); if(bb) bb.style.display='';
+    }catch(_){}
+    renderBracketView(true);                 // pop the bracket view (also marks standby)
+  }
+
+  /* ===================== Brackets — view ===================== */
+  // My elimination state from the (possibly mirrored) bracket: 2 losses = out (double elim).
+  function bracketMyLosses(){
+    const b=state.bracket; if(!b||!b.matches) return 0;
+    let n=0; for(const k in b.matches){ const m=b.matches[k];
+      if(m.winner!=null && (m.a===state.me.id||m.b===state.me.id) && m.winner!==state.me.id) n++; }
+    return n;
+  }
+  function _bMatchLabel(b,m){
+    const nm=id=> id?(bName(b,id)+(id===state.me.id?' (you)':'')):'…';
+    const a=nm(m.a), bb=nm(m.b);
+    let tag='';
+    if(m.winner!=null) tag=' — 🏆 '+nm(m.winner);
+    else if(m.assigned) tag=' — ▶ live';
+    else if(m.a!=null && m.b!=null) tag=' — ready';
+    const mine=(m.a===state.me.id||m.b===state.me.id);
+    return '<div style="margin:2px 0'+(mine?';color:var(--ui-text-highlight)':'')+'">'+a+' vs '+bb+tag+'</div>';
+  }
+  function renderBracketView(show){
+    const b=state.bracket; const body=document.getElementById('bracketBody'); if(!body) return;
+    const bb=document.getElementById('bracketBtn'); if(bb) bb.style.display = b?'':'none';
+    if(!b){ body.innerHTML='No active tournament.'; return; }
+    // group matches by region (wb-<r>, lb-<r>, gf)
+    const wbR={}, lbR={}, gf=[];
+    for(const key of (b.order||[])){ const m=b.matches[key]; if(!m) continue;
+      if(key.startsWith('wb-')){ const r=key.split('-')[1]; (wbR[r]=wbR[r]||[]).push(m); }
+      else if(key.startsWith('lb-')){ const r=key.split('-')[1]; (lbR[r]=lbR[r]||[]).push(m); }
+      else if(key==='gf'||key==='gf2'){ if(!(key==='gf2' && !(b.matches['gf']&&b.matches['gf'].winner===b.matches['gf'].b))) gf.push(m); }
+    }
+    let h='';
+    // status banner
+    if(b.status==='done'){
+      const champ=bName(b,b.champion); const meWon=b.champion===state.me.id;
+      h+='<div style="font-size:15px;margin-bottom:8px;color:'+(meWon?'var(--ui-good-bright)':'var(--ui-text-highlight)')+'">'+(meWon?'🏆 You are the champion!':('🏆 Champion: '+champ))+'</div>';
+      h+='<div class="row"><button onclick="Game.exitBracket()">Back to lobby</button></div>';
+    } else {
+      const losses=bracketMyLosses();
+      let s;
+      if(state.bracketMatchKey) s='▶ Your match is live.';
+      else if(losses>=2) s='❌ You\'ve been eliminated — watch it out or head back.';
+      else s='⏳ Standby — dock to upgrade (⚓). Your next match starts automatically when it\'s ready.';
+      h+='<div style="margin-bottom:8px">'+s+(losses===1?' <span class="dim">(one loss — losers\' bracket)</span>':'')+'</div>';
+      if(losses>=2) h+='<div class="row" style="margin-bottom:8px"><button onclick="Game.exitBracket()">Back to lobby</button></div>';
+    }
+    const col=(title,rounds)=>{
+      let c='<div style="min-width:200px"><div style="font-weight:bold;color:var(--ui-text-highlight);border-bottom:1px solid var(--ui-divider);margin-bottom:4px">'+title+'</div>';
+      const keys=Object.keys(rounds).sort((x,y)=>x-y);
+      for(const r of keys){ c+='<div class="dim" style="margin-top:5px;font-size:11px">Round '+(+r+1)+'</div>'; for(const m of rounds[r]) c+=_bMatchLabel(b,m); }
+      if(!keys.length) c+='<div class="dim">—</div>';
+      return c+'</div>';
+    };
+    h+='<div style="display:flex;gap:18px;flex-wrap:wrap">';
+    h+=col('Winners',wbR);
+    h+=col('Losers',lbR);
+    let g='<div style="min-width:160px"><div style="font-weight:bold;color:var(--ui-text-highlight);border-bottom:1px solid var(--ui-divider);margin-bottom:4px">Grand Final</div>';
+    for(const m of gf) g+=_bMatchLabel(b,m); if(!gf.length) g+='<div class="dim">—</div>';
+    h+=g+'</div></div>';
+    body.innerHTML=h;
+    if(show || b.status==='done') document.getElementById('bracketPanel').style.display='block';
+  }
+  function toggleBracketPanel(){
+    const el=document.getElementById('bracketPanel'); if(!el) return;
+    if(el.style.display==='block'){ el.style.display='none'; }
+    else { renderBracketView(true); }
   }
 
   // Report this match's winner to the tournament coordinator (host applies locally).
@@ -6804,7 +6891,7 @@ const Game=(()=>{
   boostEl.addEventListener('pointercancel',()=>{ state.boostHeld=false; boostEl.classList.remove('on'); });
 
   return {
-    startSolo,startTutorial,endTutorial,createRoom,joinRoomFromInput,copyRoomLink,leaveMesh,resetForNextRound,toggleDebug,dbgInspect,dbgClear,dbgCopy,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,openSettings,closeSettings,leaveGame,toggleVoice,startBindingCapture,resetBindings,
+    startSolo,startTutorial,endTutorial,createRoom,joinRoomFromInput,copyRoomLink,leaveMesh,resetForNextRound,toggleDebug,dbgInspect,dbgClear,dbgCopy,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,openSettings,closeSettings,leaveGame,toggleVoice,toggleBracketPanel,exitBracket,startBindingCapture,resetBindings,
     sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
     lobbySetPlace,lobbyBuilderClick,lobbyGunCfg,lobbySaveDesign,lobbyResetDesign,lobbyLoadDesign,
   };
