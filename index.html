@@ -322,6 +322,7 @@
               <option value="race">Race (checkpoints)</option>
               <option value="infection">Infection (tag — last clean wins)</option>
               <option value="soccer">Soccer (teams shoot ball into goals)</option>
+              <option value="brackets">Brackets (1v1 double-elim tournament)</option>
             </select></div>
           <div class="row" id="raceOptsRow" style="display:none">Race opts
             <label class="dim">checkpoints <input id="raceCheckpoints" type="number" min="3" max="12" value="6" style="width:48px;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px"></label>
@@ -935,6 +936,13 @@ const Game=(()=>{
     piratesKilled:0,  // increments on each pirate death (king summon trigger)
     kingActive:false, // a Pirate King is currently in the world
     combatHeat:0,     // 0..1 sticky "in a firefight" level — spikes on hits, decays over ~2-3s; drives music intensity
+    // --- Brackets (1v1 double-elim tournament) ---
+    bracket:null,           // host: authoritative tournament tree; clients: read-only mirror. Non-null for the whole tournament.
+    bracketCarry:null,      // {layout,creds,materials,inventory} carried across matches
+    bracketOpponentId:null, // sortieId of my current human opponent (null = AI/standby) — the match-isolation key
+    bracketMatchKey:null,   // key of the match I'm currently playing
+    bracketHostId:null,     // sortieId of the tournament coordinator (whoever started it)
+    bracketStandby:false,   // true between matches (waiting + dock/shop)
     pickups:[],       // [{x,y,vx,vy,rot,type,life}] floating module pickups
     pings:[],         // [{x,y,team,life}] map pings
     npcSpawnCd:600,   // ticks until next NPC spawn attempt
