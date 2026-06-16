@@ -5808,7 +5808,7 @@ const Game=(()=>{
     }
     const totalRacers = playerIds.length + aicount;
     state.pendingStart = { entities, playerHubs, playerSlots, totalRacers, isHost:true, ownerId: state.me.id };
-    if(havePeers){
+    if(humanPeerCount()>0){
       try {
         Net.broadcast({kind:'start_game',
           seed,
