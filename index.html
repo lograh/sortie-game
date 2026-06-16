@@ -431,6 +431,11 @@
     <div class="dim" style="font-size:11px;margin-bottom:6px">Click a slot then press a key. Your ship won't respond to keys while a slot is highlighted.</div>
     <div id="setBindings"></div>
     <div class="row" style="margin-top:8px"><button onclick="Game.resetBindings()">Reset bindings to defaults</button></div>
+    <h4 id="setLeaveHeader" style="color:var(--ui-text-highlight);margin:14px 0 6px 0;border-bottom:1px solid var(--ui-divider);padding-bottom:4px;display:none">Game</h4>
+    <div class="row" id="setLeaveRow" style="display:none">
+      <button class="bad" onclick="Game.leaveGame()">Leave game → back to lobby</button>
+      <span class="dim" style="font-size:11px;margin-left:8px">Bow out of this round without closing the tab.</span>
+    </div>
   </div>
 </div>
 
@@ -1786,6 +1791,18 @@ const Game=(()=>{
       chatLine((state.players[from]?.name||from)+': '+m.text);
     } else if(m.kind==='team'){
       const p=state.players[from]; if(p) p.team=m.team;
+    } else if(m.kind==='leave_game'){
+      // A peer bowed out of the round gracefully (not a 30s silence timeout). Adopt any bots
+      // they were simulating if we're the elected adopter, then remove their ship. They stay
+      // in the room/lobby, so we leave them in lobbyPeers (they can rejoin the next round).
+      const p=state.players[from];
+      if(p){
+        if(state.mode==='playing' && isAdopterFor(from)) adoptOrphanedEntities(from);
+        delete state.players[from];
+        const nm=p.name||from.slice(0,4);
+        if(state.mode==='playing'){ chatLine('* '+nm+' left the game'); if(typeof killFeed==='function') killFeed(nm+' left'); }
+        else if(typeof addLobbyChatLine==='function') addLobbyChatLine('* '+nm+' left the game','sys');
+      }
     } else if(m.kind==='rtt_ping'){
       Net.broadcast({kind:'rtt_pong', t:m.t, target:from});
     } else if(m.kind==='rtt_pong'){
@@ -5607,11 +5624,25 @@ const Game=(()=>{
     document.getElementById('setVolMusicVal').textContent  = Math.round(Settings.data.audio.music*100)+'%';
     document.getElementById('setVolSfxVal').textContent    = Math.round(Settings.data.audio.sfx*100)+'%';
     renderSettingsBindings();
+    // "Leave game" only makes sense mid-round.
+    const inRound = state.mode==='playing';
+    const lh = document.getElementById('setLeaveHeader'); if(lh) lh.style.display = inRound ? '' : 'none';
+    const lr = document.getElementById('setLeaveRow'); if(lr) lr.style.display = inRound ? '' : 'none';
     m.style.display='block';
   }
   function closeSettings(){
     Settings._captureSlot = null;
     const m = document.getElementById('settingsModal'); if(m) m.style.display='none';
+  }
+  // Graceful mid-round exit: drop back to the lobby and tell peers now so they adopt our
+  // bots and remove our ship immediately instead of waiting out the 30s drop timeout.
+  function leaveGame(){
+    if(state.mode!=='playing'){ closeSettings(); return; }
+    if(!confirm('Leave this round and return to the lobby? The other players keep going.')) return;
+    try { Net.broadcast({kind:'leave_game'}); } catch(_){}
+    closeSettings();
+    resetForNextRound();
+    addLobbyChatLine('* you left the round — others are still playing','sys');
   }
   function startBindingCapture(action, index){
     Settings._captureSlot = {action, index:index|0};
@@ -6120,7 +6151,7 @@ const Game=(()=>{
   boostEl.addEventListener('pointercancel',()=>{ state.boostHeld=false; boostEl.classList.remove('on'); });
 
   return {
-    startSolo,startTutorial,endTutorial,createRoom,joinRoomFromInput,copyRoomLink,leaveMesh,resetForNextRound,toggleDebug,dbgInspect,dbgClear,dbgCopy,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,openSettings,closeSettings,startBindingCapture,resetBindings,
+    startSolo,startTutorial,endTutorial,createRoom,joinRoomFromInput,copyRoomLink,leaveMesh,resetForNextRound,toggleDebug,dbgInspect,dbgClear,dbgCopy,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,openSettings,closeSettings,leaveGame,startBindingCapture,resetBindings,
     sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
     lobbySetPlace,lobbyBuilderClick,lobbyGunCfg,lobbySaveDesign,lobbyResetDesign,lobbyLoadDesign,
   };
