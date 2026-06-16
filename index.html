@@ -1425,6 +1425,58 @@ const Game=(()=>{
       dbg('   '+st.padEnd(8)+traffic.padEnd(30)+' '+url.replace(/^wss:\/\//,''));
     }
   }
+  // Resolve a Trystero peer id to a human label: "name / trysteroId6 / sortie4".
+  function _labelForTrystero(tid){
+    const sid = trysteroToSortie[tid];
+    let n = null;
+    if(sid){
+      n = (state.lobbyPeers[sid] && state.lobbyPeers[sid].name)
+        || (state.players[sid] && state.players[sid].name) || null;
+    }
+    return (n||'?')+' / '+String(tid).slice(0,6)+(sid?(' / '+sid.slice(0,4)):' / —');
+  }
+  // Identity-map each live pc back to its Trystero peer id so captured-pc rows get names.
+  function _pcToTrystero(){
+    const map = new Map();
+    try { const peers=_trysteroRoom.getPeers()||{}; for(const id in peers){ if(peers[id]) map.set(peers[id], id); } } catch(_){}
+    return map;
+  }
+  // The ground truth: ask each connection's getStats() for the actually-nominated
+  // candidate pair. This reports the REAL selected IPs (even when the SDP only carried
+  // mDNS .local names), the path type (host/srflx/relay = "how many hops"), the
+  // ICE-measured round-trip time, and bytes moved. Async — appended after the sync dump.
+  async function dbgSelectedPairs(){
+    if(!_trysteroRoom) return;
+    let peers={}; try { peers=_trysteroRoom.getPeers()||{}; } catch(_){ return; }
+    const ids=Object.keys(peers);
+    if(!ids.length) return;
+    dbg('selected pairs (getStats — real IPs, bypasses .local):');
+    for(const id of ids){
+      const pc=peers[id];
+      if(!pc || !pc.getStats){ dbg('  ['+_labelForTrystero(id)+'] no getStats'); continue; }
+      try {
+        const stats=await pc.getStats();
+        const byId={}; stats.forEach(r=>{ byId[r.id]=r; });
+        // Prefer the transport's explicitly-selected pair; else a nominated/succeeded one.
+        let selId=null;
+        stats.forEach(r=>{ if(r.type==='transport' && r.selectedCandidatePairId) selId=r.selectedCandidatePairId; });
+        let pair = selId && byId[selId] ? byId[selId] : null;
+        if(!pair){ stats.forEach(r=>{ if(r.type==='candidate-pair' && r.state==='succeeded'){ if(!pair || r.nominated) pair=r; } }); }
+        const sid=trysteroToSortie[id];
+        const appPing = sid!=null ? state.pingTo[sid] : undefined;
+        if(!pair){ dbg('  ['+_labelForTrystero(id)+'] no nominated pair (ice='+pc.iceConnectionState+')'); continue; }
+        const lc=byId[pair.localCandidateId]||{}, rc=byId[pair.remoteCandidateId]||{};
+        const fmt=c=>(c.ip||c.address||'?')+':'+(c.port||'?')+'/'+(c.candidateType||'?')+(c.protocol?(' '+c.protocol):'');
+        const rtt=pair.currentRoundTripTime!=null?(Math.round(pair.currentRoundTripTime*1000)+'ms'):'?';
+        const path=(lc.candidateType||'?')+'/'+(rc.candidateType||'?');
+        const relayed=(lc.candidateType==='relay'||rc.candidateType==='relay')?' [TURN-relayed]':'';
+        const fam=/:/.test(lc.ip||lc.address||'')?'IPv6':'IPv4';
+        dbg('  ['+_labelForTrystero(id)+']  '+fam+relayed);
+        dbg('     '+fmt(lc)+'  ⇄  '+fmt(rc));
+        dbg('     path='+path+' iceRTT='+rtt+(appPing!=null?(' appPing='+appPing+'ms'):'')+' tx='+(pair.bytesSent||0)+'b rx='+(pair.bytesReceived||0)+'b');
+      } catch(e){ dbg('  ['+_labelForTrystero(id)+'] getStats threw '+(e&&e.message||e)); }
+    }
+  }
   function dbgInspect(){
     if(!_trysteroRoom){ dbg('inspect: not in a room'); return; }
     let peers = {};
@@ -1432,9 +1484,12 @@ const Game=(()=>{
     const ids = Object.keys(peers);
     dbg('── inspect: getPeers()='+ids.length+', capturedPCs='+_allPCs.length+', lobbyPeers '+Object.keys(state.lobbyPeers).length+' ──');
     // Show EVERY captured pc (getPeers hides ones that never connected).
+    const pcMap = _pcToTrystero();
     _allPCs.forEach((pc, i) => {
       try {
-        dbg('  pc#'+(i+1)+': conn='+pc.connectionState+' ice='+pc.iceConnectionState+' gather='+pc.iceGatheringState+' sig='+pc.signalingState);
+        const tid = pcMap.get(pc);
+        const label = tid ? '  ['+_labelForTrystero(tid)+']' : '  [orphan]';
+        dbg('  pc#'+(i+1)+label+': conn='+pc.connectionState+' ice='+pc.iceConnectionState+' gather='+pc.iceGatheringState+' sig='+pc.signalingState);
         dbg('     local : '+analyzeSdp(pc.localDescription && pc.localDescription.sdp));
         dbg('     remote: '+analyzeSdp(pc.remoteDescription && pc.remoteDescription.sdp));
       } catch(_){}
@@ -1442,11 +1497,14 @@ const Game=(()=>{
     dbgRelays();
     for(const id of ids){
       const pc = peers[id];
-      if(!pc){ dbg('  '+id.slice(0,6)+': <null pc>'); continue; }
-      dbg('  '+id.slice(0,6)+': conn='+pc.connectionState+' ice='+pc.iceConnectionState+' gather='+pc.iceGatheringState+' sig='+pc.signalingState);
+      if(!pc){ dbg('  ['+_labelForTrystero(id)+']: <null pc>'); continue; }
+      const sid=trysteroToSortie[id];
+      const appPing = sid!=null ? state.pingTo[sid] : undefined;
+      dbg('  ['+_labelForTrystero(id)+']: conn='+pc.connectionState+' ice='+pc.iceConnectionState+' gather='+pc.iceGatheringState+' sig='+pc.signalingState+(appPing!=null?(' appPing='+appPing+'ms'):''));
       dbg('     local : '+analyzeSdp(pc.localDescription && pc.localDescription.sdp));
       dbg('     remote: '+analyzeSdp(pc.remoteDescription && pc.remoteDescription.sdp));
     }
+    dbgSelectedPairs();   // async: appends the real selected-pair / ping / path lines
   }
   const trysteroToSortie = {};         // trystero peerId -> sortie id
   const sortieToTrystero = {};         // sortie id -> trystero peerId
@@ -3815,9 +3873,12 @@ const Game=(()=>{
     // sync me
     state.tick++;
     if(me) me.docked=state.docked;
-    // ping probe every 2 seconds (only if we have peers)
-    if(state.tick%120===0 && Object.keys(Net.peers).length>0){
-      Net.broadcast({kind:'rtt_ping', t:performance.now()});
+    // ping probe every 2 seconds (only if we have peers). Count Trystero peers, not the
+    // legacy manual-handshake Net.peers map (which stays empty under Trystero).
+    if(state.tick%120===0){
+      let havePeers = Object.keys(Net.peers).length>0;
+      if(!havePeers && _trysteroRoom){ try{ havePeers = Object.keys(_trysteroRoom.getPeers()||{}).length>0; }catch(_){} }
+      if(havePeers) Net.broadcast({kind:'rtt_ping', t:performance.now()});
     }
     if(state.tick%3===0 && me){
       Net.broadcast({kind:'state',name:state.me.name,x:me.x,y:me.y,vx:me.vx,vy:me.vy,rot:me.rot,hp:me.hp,maxHp:me.maxHp,team:me.team,alive:me.alive,docked:state.docked,grace:me.grace>0,thrusting:!!me.thrusting,checkpoint:me.checkpoint||0,lap:me.lap||0});
