@@ -1084,6 +1084,25 @@ const Game=(()=>{
     const s=shipStats(p); p.maxHp=s.maxHp; p.hp=s.maxHp; p.shieldMax=s.shieldMax; p.shield=s.shieldMax; p.boostMax=s.boostCap; p.boost=s.boostCap;
     return p;
   }
+  // --- Bracket progression: snapshot/restore the local player's loadout so credits, materials,
+  // ship layout and inventory carry from one tournament match to the next (HP/position reset). ---
+  function saveBracketCarry(){
+    const me=state.players[state.me.id]; if(!me) return;
+    state.bracketCarry={
+      layout: me.layout ? cloneLayout(me.layout) : null,
+      creds: me.creds||0,
+      materials: Object.assign({iron:0,silicon:0,carbon:0,rare:0}, me.materials||{}),
+      inventory: Object.assign({}, me.inventory||{}),
+    };
+  }
+  function restoreBracketCarry(p){
+    const c=state.bracketCarry; if(!c||!p) return;
+    if(c.layout) p.layout=cloneLayout(c.layout);
+    p.creds=c.creds||0;
+    p.materials=Object.assign({iron:0,silicon:0,carbon:0,rare:0}, c.materials||{});
+    p.inventory=Object.assign({}, c.inventory||{});
+    const s=shipStats(p); p.maxHp=s.maxHp; p.hp=s.maxHp; p.shieldMax=s.shieldMax; p.shield=s.shieldMax; p.boostMax=s.boostCap; p.boost=s.boostCap;
+  }
 
   function genWorld(seed){
     if(seed) state.worldSeed=seed>>>0;
@@ -3890,7 +3909,7 @@ const Game=(()=>{
                 p._raceStun={x:p.x, y:p.y};
                 killFeed(p.name+' ↩ stunned'+(shooter?(' by '+shooter.name):''),'respawn');
               } else {
-                p.materials={iron:0,silicon:0,carbon:0,rare:0}; p.creds=0; p.inventory={};
+                if(!state.bracket){ p.materials={iron:0,silicon:0,carbon:0,rare:0}; p.creds=0; p.inventory={}; }  // brackets: keep loadout across deaths/matches
                 if(shooter){
                   if(!shooter.pirate) shooter.kills++;
                   killFeed(shooter.name+' ✗ '+p.name);
@@ -3914,7 +3933,7 @@ const Game=(()=>{
           me._raceStun={x:me.x,y:me.y};
           killFeed(me.name+' ↩ stunned by radiation','respawn');
         } else {
-          me.materials={iron:0,silicon:0,carbon:0,rare:0}; me.creds=0; me.inventory={};
+          if(!state.bracket){ me.materials={iron:0,silicon:0,carbon:0,rare:0}; me.creds=0; me.inventory={}; }
           killFeed(me.name+' ☢ radiation');
         }
         spawnExplosion(me.x,me.y,18); Sound.explosion();
@@ -3963,7 +3982,7 @@ const Game=(()=>{
               me._raceStun={x:me.x, y:me.y};
               killFeed(me.name+' ↩ stunned by asteroid','respawn');
             } else {
-              me.materials={iron:0,silicon:0,carbon:0,rare:0}; me.creds=0; me.inventory={};
+              if(!state.bracket){ me.materials={iron:0,silicon:0,carbon:0,rare:0}; me.creds=0; me.inventory={}; }
               killFeed(me.name+' ✗ asteroid');
             }
             spawnExplosion(me.x,me.y,18);
