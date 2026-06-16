@@ -840,7 +840,7 @@ const Music=(()=>{
 
   function scheduler(){
     if(!running || !ctx) return;
-    intensity += (target-intensity) * (target>intensity ? 0.12 : 0.02);  // fast attack, slow release → combat punches in, eases out
+    intensity += (target-intensity) * (target>intensity ? 0.08 : 0.02);  // attack faster than release → combat rises in, eases out
     const now=ctx.currentTime;
     padBus.gain.setTargetAtTime(0.14+0.12*intensity, now, 0.3);
     leadBus.gain.setTargetAtTime(0.05+0.25*intensity, now, 0.3);
@@ -3816,8 +3816,8 @@ const Game=(()=>{
           takeDamage(p, b.dmg);
           b._dead=true;
           p.hitFlash=8;
-          if(p.id===state.me.id){ Sound.hit(); spawnHitArc(p,b); state.combatHeat=Math.min(1, state.combatHeat+0.55); }   // taking fire = big music spike
-          else if(shooter && shooter.id===state.me.id){ state.combatHeat=Math.min(1, state.combatHeat+0.12); }            // landing hits = we're engaged
+          if(p.id===state.me.id){ Sound.hit(); spawnHitArc(p,b); state.combatHeat=Math.min(1, state.combatHeat+0.25); }   // taking a hit = a small music bump (sustained signals carry the rest)
+          else if(shooter && shooter.id===state.me.id){ state.combatHeat=Math.min(1, state.combatHeat+0.08); }            // landing hits = we're engaged
           if(p.hp<=0){
             if(p.pirate){
               // Only one peer should spawn the loot. Killer-spawns so they can pick it up
@@ -5433,8 +5433,20 @@ const Game=(()=>{
           const dx=op.x-me2.x, dy=op.y-me2.y;
           if(dx*dx+dy*dy<2200*2200) nearbyHostiles++;
         }
-        intens += state.combatHeat * 0.7;                 // recent fighting — the dominant, sticky driver
-        intens += Math.min(0.30, nearbyHostiles*0.13);     // danger nearby even before shots land
+        // "Under fire": hostile bullets whizzing past (within ~850px). This is the real driver
+        // of the in-combat feel — a circling enemy spraying shots keeps several in flight near
+        // you even when imprecise aim means an actual hit only lands now and then.
+        let underFire = 0;
+        for(const b of state.bullets){
+          if(b.owner===state.me.id) continue;
+          const sh = state.players[b.owner];
+          if(sh && !(sh.pirate || sh.team===0 || sh.team!==me2.team)) continue;   // skip friendly fire
+          const bx=b.x-me2.x, by=b.y-me2.y;
+          if(bx*bx+by*by < 850*850) underFire++;
+        }
+        intens += state.combatHeat * 0.55;                 // recent hits — emphasis on top, smaller so it's not twitchy
+        intens += Math.min(0.34, nearbyHostiles*0.17);     // an enemy nearby clearly registers on its own
+        intens += Math.min(0.30, underFire*0.06);          // being shot at — near-misses count
         if(state.kingActive) intens += 0.20;
         if(inRadioactiveNebula(me2.x,me2.y)) intens += 0.12;
         // Critical HP (the red-border alarm, <25%) sustains tension on its own — even after
