@@ -2013,6 +2013,15 @@ const Game=(()=>{
   }
 
 
+  // Bracket isolation gate: outside a tournament everything is shared (returns true). Inside,
+  // only my current human opponent's gameplay counts (null opponent = AI match or standby = none).
+  function inMyMatch(from){
+    if(!state.bracket) return true;
+    return from === state.bracketOpponentId;
+  }
+  // Gameplay message kinds that must be scoped to the current match in bracket mode.
+  const BRACKET_GAMEPLAY_KINDS = {state:1,bullet:1,ast_hit:1,ast_sync:1,chat:1,team:1,ping:1,pickup_taken:1,pickup_spawn:1};
+
   function handleNetMsg(from,m,viaPeerKey){
     // Heartbeat: any message from a remote player counts as "seen" — clears laggy/dropped.
     if(from && from!==state.me.id){
@@ -2026,6 +2035,10 @@ const Game=(()=>{
         }
       }
     }
+    // Bracket isolation: in a tournament, drop gameplay from anyone who isn't my current
+    // opponent (other parallel matches happen on other clients). Coordination/lobby/rtt msgs
+    // and the heartbeat above still flow so the host can track liveness and run the bracket.
+    if(state.bracket && from!==state.me.id && !inMyMatch(from) && BRACKET_GAMEPLAY_KINDS[m.kind]) return;
     if(m.kind==='state'){
       // A 'state' broadcast means the sender is actively in a round. If we're sitting in the
       // lobby, that tells us a round is in progress elsewhere — note when we last heard one so
