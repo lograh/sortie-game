@@ -184,11 +184,22 @@
     line-height:20px !important;
     vertical-align:middle;
   }
-  #lobby input[type=number]::-webkit-inner-spin-button,
-  #lobby input[type=number]::-webkit-outer-spin-button{
-    opacity:1;
-    height:20px;
+  /* Native number spinners render dark-on-dark (invisible but clickable) in Safari and look
+     inconsistent across browsers, so hide them everywhere and use the custom ▲/▼ steppers
+     injected by JS (addNumberSteppers) instead. */
+  input[type=number]{ -moz-appearance:textfield; appearance:textfield; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button{ -webkit-appearance:none; margin:0; }
+  .numstep{ display:inline-flex; flex-direction:column; margin-left:3px; vertical-align:middle; }
+  .numstep-btn{
+    width:18px; height:11px; min-height:0 !important; padding:0 !important; line-height:9px;
+    font-size:8px; display:flex; align-items:center; justify-content:center; cursor:pointer;
+    background:#012; color:var(--ui-accent,#2af); border:1px solid var(--ui-accent,#2af);
   }
+  .numstep-btn + .numstep-btn{ border-top:none; }
+  .numstep-btn:first-child{ border-radius:3px 3px 0 0; }
+  .numstep-btn:last-child{ border-radius:0 0 3px 3px; }
+  .numstep-btn:active{ background:var(--ui-accent,#2af); color:#012; }
   textarea{width:100%;background:var(--ui-bg-input);color:var(--ui-text-light);border:1px solid var(--ui-accent);font-family:inherit;font-size:11px;box-sizing:border-box}
   .row{display:flex;gap:6px;align-items:center;margin:5px 0;flex-wrap:wrap}
   .tag{padding:1px 5px;background:var(--ui-bg-shallow);border:1px solid var(--ui-accent);border-radius:3px;font-size:11px}
@@ -6292,6 +6303,35 @@ const Game=(()=>{
     gmSel.addEventListener('change', showRaceOpts);
     showRaceOpts();
   }
+
+  // Custom ▲/▼ steppers for every number input — the native spinners are invisible on
+  // Safari's dark theme. Steps respect min/max/step and fire input+change so existing
+  // listeners (team list, etc.) react exactly as if the user typed.
+  function addNumberSteppers(){
+    document.querySelectorAll('input[type=number]').forEach(inp=>{
+      if(inp._stepped) return; inp._stepped = true;
+      const wrap=document.createElement('span'); wrap.className='numstep';
+      const mk=(dir,glyph)=>{
+        const b=document.createElement('button');
+        b.type='button'; b.className='numstep-btn'; b.textContent=glyph; b.tabIndex=-1;
+        b.addEventListener('click', e=>{
+          e.preventDefault();
+          const step=parseFloat(inp.step)||1;
+          const min=inp.min!==''?parseFloat(inp.min):-Infinity;
+          const max=inp.max!==''?parseFloat(inp.max):Infinity;
+          let v=parseFloat(inp.value); if(!isFinite(v)) v=0;
+          v=Math.max(min, Math.min(max, Math.round((v+dir*step)*1e6)/1e6));
+          inp.value=String(v);
+          inp.dispatchEvent(new Event('input',{bubbles:true}));
+          inp.dispatchEvent(new Event('change',{bubbles:true}));
+        });
+        return b;
+      };
+      wrap.appendChild(mk(1,'▲')); wrap.appendChild(mk(-1,'▼'));
+      inp.insertAdjacentElement('afterend', wrap);
+    });
+  }
+  addNumberSteppers();
 
   // (name init moved above consumeInboundHash so cold-link guests broadcast a real name)
   // Build version — uses Last-Modified from GitHub Pages, so it auto-bumps each push.
