@@ -1382,6 +1382,20 @@ const Game=(()=>{
   let _trysteroRoom = null;
   let _trysteroSend = null;            // (data, targetTpeer?) => void  (null when not in a room)
   let _currentRoomCode = null;
+  // Gossip relay: Trystero only connects pairs that successfully establish WebRTC; pairs that fail
+  // (NAT/ICE quirks, Safari being finicky) silently stay disconnected with no fallback. So we flood
+  // every message across the mesh — a node re-sends unseen messages to its OTHER neighbors, letting
+  // peers who lack a direct link still talk through a common one. `_seenMids` dedups (loop-proof).
+  let _msgSeq = 0;
+  const _seenMids = new Set();
+  function _freshMid(){ return state.me.id + ':' + (++_msgSeq); }
+  function _noteMid(mid){ _seenMids.add(mid); if(_seenMids.size>6000){ const it=_seenMids.values().next().value; _seenMids.delete(it); } }
+  function relayToOthers(data, sourceTpeer){
+    if(!_trysteroRoom || !_trysteroSend) return;
+    let peers={}; try{ peers=_trysteroRoom.getPeers()||{}; }catch(_){ return; }
+    const copy = Object.assign({}, data, { _hops: (data._hops||0)+1 });
+    for(const tp in peers){ if(tp===sourceTpeer) continue; try{ _trysteroSend(copy, tp); }catch(_){} }
+  }
   let _getRelaySockets = null;         // Trystero export: returns {url: WebSocket} of broker sockets
   let _sawAnyPeerJoin = false;         // diagnostic: has onPeerJoin ever fired this session?
   let _lastJoinError = null;           // diagnostic: last Trystero onJoinError detail
@@ -1649,13 +1663,14 @@ const Game=(()=>{
     // mesh-view/gossip features. (The old manual-handshake `peers`/`routes` maps are gone.)
     directRoutes:{},
     onMsg:(from,m)=>handleNetMsg(from,m),
-    broadcast(m){ if(_trysteroSend){ try{ _trysteroSend({from:state.me.id, ...m}); }catch(_){} } },
-    broadcastAs(asId,m){ if(_trysteroSend){ try{ _trysteroSend({from:asId, ...m}); }catch(_){} } },
+    broadcast(m){ if(_trysteroSend){ const mid=_freshMid(); _noteMid(mid); try{ _trysteroSend({from:state.me.id, _mid:mid, _hops:0, ...m}); }catch(_){} } },
+    broadcastAs(asId,m){ if(_trysteroSend){ const mid=_freshMid(); _noteMid(mid); try{ _trysteroSend({from:asId, _mid:mid, _hops:0, ...m}); }catch(_){} } },
     sendTo(id,m){
       if(!_trysteroSend) return;
-      const payload={from:state.me.id, ...m};
-      const t=sortieToTrystero[id];
-      try{ t ? _trysteroSend(payload, t) : _trysteroSend(payload); }catch(_){}
+      const mid=_freshMid(); _noteMid(mid);
+      const payload={from:state.me.id, _mid:mid, _hops:0, _to:id, ...m};
+      // Flood (tagged with _to): reaches `id` whether it's a direct neighbor or only relay-reachable.
+      try{ _trysteroSend(payload); }catch(_){}
     },
   };
 
@@ -1733,13 +1748,23 @@ const Game=(()=>{
     dbg('action API: '+(Array.isArray(action)?'tuple':'object'));
     registerRecv((data, meta) => {
       const tpeer = (meta && typeof meta === 'object') ? meta.peerId : meta;
-      // Wire-level: every game message that arrives over an open data channel.
-      const sz = (()=>{ try{ return JSON.stringify(data).length; }catch(_){ return '?'; } })();
-      dbg('RX ← '+String(tpeer).slice(0,6)+' : '+(data&&data.kind||'?')+' from='+(data&&data.from||'?')+' ('+sz+'b)');
-      if(data && data.from && data.from !== state.me.id && tpeer){
+      // Gossip relay: drop messages we've already seen (loop prevention), otherwise re-flood to our
+      // other neighbors so peers without a direct link still receive it.
+      if(data && data._mid){
+        if(_seenMids.has(data._mid)) return;
+        _noteMid(data._mid);
+        relayToOthers(data, tpeer);
+      }
+      // Only learn the direct route from a first-hop message (a relayed one's `tpeer` is the relayer,
+      // not the origin — mapping it would misroute sendTo).
+      if(data && data.from && data.from !== state.me.id && tpeer && (data._hops||0)===0){
         trysteroToSortie[tpeer] = data.from;
         sortieToTrystero[data.from] = tpeer;
       }
+      // A targeted message addressed to someone else: we relayed it above; don't process it locally.
+      if(data && data._to && data._to !== state.me.id) return;
+      const sz = (()=>{ try{ return JSON.stringify(data).length; }catch(_){ return '?'; } })();
+      dbg('RX ← '+String(tpeer).slice(0,6)+(data&&(data._hops||0)?('+'+data._hops):'')+' : '+(data&&data.kind||'?')+' from='+(data&&data.from||'?')+' ('+sz+'b)');
       try { handleNetMsg(data.from, data, tpeer); } catch(err){ console.error('[sortie] handleNetMsg', err); dbg('handleNetMsg threw: '+err.message); }
     });
 
@@ -2154,6 +2179,15 @@ const Game=(()=>{
       if(viaPeerKey) Net.directRoutes[from] = viaPeerKey;
       if(typeof refreshLobbyMP==='function') refreshLobbyMP();
       if(typeof addLobbyChatLine==='function') addLobbyChatLine('* '+(m.name||from.slice(0,4))+' joined','sys');
+    } else if(m.kind==='heartbeat'){
+      // Presence beacon (broadcast, so it floods the relayed mesh). Register peers we haven't met
+      // via a direct lobby_join yet → the roster fills in even when the mesh is only partially
+      // connected. (No directRoutes here: a relayed beacon's path may be multi-hop.)
+      if(from!==state.me.id && !state.lobbyPeers[from]){
+        state.lobbyPeers[from]={name:m.name||('P-'+from.slice(0,3))};
+        if(typeof refreshLobbyMP==='function') refreshLobbyMP();
+        if(typeof addLobbyChatLine==='function') addLobbyChatLine('* '+(m.name||from.slice(0,4))+' joined','sys');
+      } else if(state.lobbyPeers[from] && m.name){ state.lobbyPeers[from].name=m.name; }
     } else if(m.kind==='rename'){
       // A peer changed their display name live — update both rosters and the UI,
       // no leave/rejoin needed. (In-game names also ride every 'state' msg, but this
@@ -2310,7 +2344,7 @@ const Game=(()=>{
     // Heartbeat keeps peerLastSeen fresh even in the silent lobby.
     if(havePeers && now-_lastHeartbeatSent > 2000){
       _lastHeartbeatSent = now;
-      try { Net.broadcast({kind:'heartbeat'}); } catch(_){}
+      try { Net.broadcast({kind:'heartbeat', name:myDisplayName()}); } catch(_){}   // name → presence beacon that floods the mesh
     }
     for(const id in state.players){
       if(id === state.me.id) continue;
