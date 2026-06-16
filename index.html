@@ -238,6 +238,8 @@
     <button id="settingsBtn" onclick="Game.openSettings()" title="Settings">⚙</button>
   </div>
 
+  <button id="pttBtn" style="display:none;position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:1500;padding:10px 18px;font-size:14px;touch-action:none;user-select:none">🎤 Hold to talk</button>
+
   <div id="chatmenu" class="panel" style="display:none;left:50%;top:54px;transform:translateX(-50%);width:min(280px,90vw)">
     <h3>Quick Chat</h3>
     <div class="body" id="chatmenuBody"></div>
@@ -423,6 +425,18 @@
       <input type="range" id="setVolChat" min="0" max="1" step="0.05" style="flex:1">
       <span id="setVolChatVal" style="min-width:36px;text-align:right">100%</span>
     </div>
+    <div class="row">Voice mode
+      <select id="setVoiceMode" style="background:#012;color:#cfe;border:1px solid #2af;padding:3px 6px">
+        <option value="vad">Voice-activated (auto)</option>
+        <option value="ptt">Push-to-talk</option>
+        <option value="open">Open mic (always on)</option>
+      </select>
+    </div>
+    <div class="row" id="setVoiceSensRow">Mic sensitivity
+      <input type="range" id="setVoiceSens" min="0" max="1" step="0.05" style="flex:1">
+      <span id="setVoiceSensVal" style="min-width:36px;text-align:right">50%</span>
+    </div>
+    <div class="row" id="setPttHintRow" style="display:none"><span class="dim" style="font-size:11px">Push-to-talk: hold the <b>Push-to-talk</b> key (set in Controls below) or the on-screen <b>Hold to talk</b> button.</span></div>
     <div class="row"><button id="voiceBtnSettings" onclick="Game.toggleVoice()">Turn voice on</button>
       <span class="dim" style="font-size:11px;margin-left:8px">Mic on/off for the current room.</span></div>
     <h4 style="color:var(--ui-text-highlight);margin:14px 0 6px 0;border-bottom:1px solid var(--ui-divider);padding-bottom:4px">Touch joystick</h4>
@@ -1099,7 +1113,9 @@ const Game=(()=>{
     KEY: 'sortie_settings_v1',
     data: {
       video: { colorblind:'off', brightness:1.0, bgStars:true, zoom:1.0 },
-      audio: { master:1.0, music:1.0, sfx:1.0, chat:1.0 },
+      // voiceMode: 'open' (always transmit) | 'vad' (voice-activated) | 'ptt' (push-to-talk).
+      // voiceSensitivity: 0..1, higher = trips on quieter speech (lower RMS threshold).
+      audio: { master:1.0, music:1.0, sfx:1.0, chat:1.0, voiceMode:'vad', voiceSensitivity:0.5 },
       touch: { maxRadius:60, thrustThreshold:0.55 },
       bindings: {
         thrust: ['KeyW','ArrowUp'],
@@ -1112,6 +1128,7 @@ const Game=(()=>{
         superBoost: ['KeyB'],
         gasCloud:   ['KeyG'],
         chat:       ['Digit1','Digit2','Digit3','Digit4','Digit5','Digit6'],
+        talk:       ['KeyV'],
       },
     },
     _captureSlot: null,   // {action,index} while user is rebinding
@@ -1722,9 +1739,63 @@ const Game=(()=>{
   /* -------- Voice chat (WebRTC audio over the same Trystero peer connections) -------- */
   let _micStream = null;                 // our local mic MediaStream (null = voice off)
   let _voiceOn = false;
+  let _micTransmitting = true;           // is the mic track currently un-muted (sending audio)?
+  let _pttHeld = false;                  // on-screen push-to-talk button currently held
+  let _voiceLoop = null;                 // interval driving VAD/PTT gating while voice is on
+  let _vadCtx=null, _vadAnalyser=null, _vadBuf=null, _vadLastVoiceAt=0;
+  const VAD_HANGOVER_MS = 280;           // keep transmitting briefly after speech so tails aren't clipped
   const _peerAudioEls = {};              // trysteroPeerId -> <audio> playing that peer's voice
   function voiceVolume(){ return Math.max(0, Math.min(1, (Settings.data.audio && Settings.data.audio.chat!=null) ? Settings.data.audio.chat : 1)); }
   function applyVoiceVolume(){ const v=voiceVolume(); for(const k in _peerAudioEls){ try{ _peerAudioEls[k].volume=v; }catch(_){} } }
+  // Mute/unmute by toggling the track's `enabled` flag — peers keep the connection but receive
+  // silence, so there's no costly renegotiation (unlike add/removeStream).
+  function setMicTransmitting(on){
+    on = !!on;
+    if(!_micStream || on===_micTransmitting) return;
+    _micTransmitting = on;
+    try { _micStream.getAudioTracks().forEach(t=>{ t.enabled = on; }); } catch(_){}
+    updateVoiceUI();   // only fires on transitions (speech start/stop), not every tick
+  }
+  // --- Voice-activity detection: read mic loudness via a Web Audio analyser ---
+  function startVAD(){
+    stopVAD();
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      _vadCtx = new Ctx();
+      try { _vadCtx.resume(); } catch(_){}   // may start suspended; the enable click is a valid gesture
+      const src = _vadCtx.createMediaStreamSource(_micStream);
+      _vadAnalyser = _vadCtx.createAnalyser();
+      _vadAnalyser.fftSize = 512;
+      src.connect(_vadAnalyser);   // analyser only — NOT to destination, so we never echo our own mic
+      _vadBuf = new Uint8Array(_vadAnalyser.fftSize);
+    } catch(e){ dbg('VAD init failed: '+((e&&e.message)||e)); }
+  }
+  function stopVAD(){
+    if(_vadCtx){ try{ _vadCtx.close(); }catch(_){} }
+    _vadCtx=null; _vadAnalyser=null; _vadBuf=null;
+  }
+  function micRms(){
+    if(!_vadAnalyser) return 0;
+    _vadAnalyser.getByteTimeDomainData(_vadBuf);
+    let sum=0;
+    for(let i=0;i<_vadBuf.length;i++){ const v=(_vadBuf[i]-128)/128; sum+=v*v; }
+    return Math.sqrt(sum/_vadBuf.length);
+  }
+  function vadThreshold(){
+    const s = Math.max(0, Math.min(1, (Settings.data.audio.voiceSensitivity!=null)?Settings.data.audio.voiceSensitivity:0.5));
+    return 0.07 - s*0.06;   // s=0 → 0.07 (only loud speech), s=1 → 0.01 (very sensitive)
+  }
+  // Runs ~20×/s while voice is on; decides whether the mic should be transmitting right now.
+  function voiceControlTick(){
+    if(!_voiceOn || !_micStream) return;
+    const mode = (Settings.data.audio.voiceMode)||'vad';
+    if(mode==='open'){ setMicTransmitting(true); return; }
+    if(mode==='ptt'){ setMicTransmitting(_pttHeld || Settings.isHeld('talk')); return; }
+    // vad
+    const now = performance.now();
+    if(micRms() > vadThreshold()) _vadLastVoiceAt = now;
+    setMicTransmitting((now - _vadLastVoiceAt) < VAD_HANGOVER_MS);
+  }
   // Attach (or refresh) the <audio> sink for a peer's incoming voice stream.
   function attachPeerStream(stream, tpeer){
     let el = _peerAudioEls[tpeer];
@@ -1749,15 +1820,24 @@ const Game=(()=>{
       addLobbyChatLine('* couldn\'t turn on voice — mic permission denied or no device','sys');
       return;
     }
-    _micStream = stream; _voiceOn = true;
+    _micStream = stream; _voiceOn = true; _micTransmitting = true; _vadLastVoiceAt = 0;
     try { _trysteroRoom.addStream(stream); } catch(e){ dbg('voice addStream threw: '+((e&&e.message)||e)); }
+    startVAD();
+    if(_voiceLoop) clearInterval(_voiceLoop);
+    _voiceLoop = setInterval(voiceControlTick, 50);
+    voiceControlTick();   // apply the initial gate immediately (e.g. PTT starts muted)
     updateVoiceUI();
-    addLobbyChatLine('* voice chat ON — others in the room can hear you','sys');
+    const mode = (Settings.data.audio.voiceMode)||'vad';
+    const how = mode==='ptt' ? 'push-to-talk' : (mode==='vad' ? 'voice-activated' : 'open mic');
+    addLobbyChatLine('* voice chat ON ('+how+') — others in the room can hear you','sys');
   }
   // quiet=true when called from teardown (no chat line / status).
   function disableVoice(quiet){
     if(!_voiceOn && !_micStream){ if(!quiet) updateVoiceUI(); return; }
     _voiceOn = false;
+    if(_voiceLoop){ clearInterval(_voiceLoop); _voiceLoop=null; }
+    stopVAD();
+    _pttHeld = false; _micTransmitting = true;
     if(_micStream){
       try { _trysteroRoom && _trysteroRoom.removeStream(_micStream); } catch(_){}
       _micStream.getTracks().forEach(t=>{ try{ t.stop(); }catch(_){} });
@@ -1768,13 +1848,28 @@ const Game=(()=>{
     if(!quiet) addLobbyChatLine('* voice chat off','sys');
   }
   function toggleVoice(){ _voiceOn ? disableVoice(false) : enableVoice(); }
-  // Reflect voice state on both the lobby button and the settings button.
+  // Reflect voice state on the lobby button, settings button, and the push-to-talk button.
   function updateVoiceUI(){
-    const label = _voiceOn ? '🎤 Voice: On' : '🎙 Voice: Off';
+    const mode = (Settings.data.audio.voiceMode)||'vad';
+    // While on, the icon shows live transmit state: 🔴 talking vs 🎙 idle/muted.
+    const onIcon = _micTransmitting ? '🔴' : '🎙';
     const lb = document.getElementById('voiceBtnLobby');
-    if(lb){ lb.textContent = label; lb.classList.toggle('good', _voiceOn); }
+    if(lb){ lb.textContent = _voiceOn ? (onIcon+' Voice: On') : '🎙 Voice: Off'; lb.classList.toggle('good', _voiceOn); }
     const sb = document.getElementById('voiceBtnSettings');
     if(sb){ sb.textContent = _voiceOn ? 'Turn voice off' : 'Turn voice on'; }
+    const ptt = document.getElementById('pttBtn');
+    if(ptt){
+      ptt.style.display = (_voiceOn && mode==='ptt') ? '' : 'none';
+      ptt.classList.toggle('good', _micTransmitting);
+      ptt.textContent = _micTransmitting ? '🔴 Talking…' : '🎤 Hold to talk';
+    }
+  }
+  // Show only the settings rows relevant to the chosen voice mode.
+  function updateVoiceModeRows(mode){
+    const sens = document.getElementById('setVoiceSensRow');
+    if(sens) sens.style.display = (mode==='vad') ? '' : 'none';
+    const hint = document.getElementById('setPttHintRow');
+    if(hint) hint.style.display = (mode==='ptt') ? '' : 'none';
   }
   // Autoplay safety net: a pure listener (mic off) may have their incoming voice blocked
   // until they interact with the page. Any click retries any paused peer audio. No-op once
@@ -1782,6 +1877,17 @@ const Game=(()=>{
   document.addEventListener('click', ()=>{
     for(const k in _peerAudioEls){ const el=_peerAudioEls[k]; if(el && el.paused){ el.play().catch(()=>{}); } }
   }, true);
+  // On-screen push-to-talk: held = transmit, released = mute. (The next voiceControlTick
+  // reads _pttHeld; we also nudge it immediately for snappy response.)
+  (function wirePtt(){
+    const ptt = document.getElementById('pttBtn'); if(!ptt) return;
+    const down = e => { _pttHeld = true; try{ ptt.setPointerCapture(e.pointerId); }catch(_){} voiceControlTick(); e.preventDefault(); };
+    const up   = () => { _pttHeld = false; voiceControlTick(); };
+    ptt.addEventListener('pointerdown', down);
+    ptt.addEventListener('pointerup', up);
+    ptt.addEventListener('pointercancel', up);
+    ptt.addEventListener('lostpointercapture', up);
+  })();
 
   function genRoomCode(){
     // Avoid ambiguous chars (0/O, 1/I) so codes are easy to read aloud.
@@ -5663,6 +5769,7 @@ const Game=(()=>{
     {key:'map',    label:'Toggle map'},
     {key:'superBoost', label:'Super boost (race)'},
     {key:'gasCloud',   label:'Gas cloud (race)'},
+    {key:'talk',       label:'Push-to-talk (voice)'},
   ];
   function renderSettingsBindings(){
     const el = document.getElementById('setBindings'); if(!el) return;
@@ -5703,6 +5810,12 @@ const Game=(()=>{
     const chatV = (Settings.data.audio.chat!=null) ? Settings.data.audio.chat : 1;
     document.getElementById('setVolChat').value = chatV;
     document.getElementById('setVolChatVal').textContent = Math.round(chatV*100)+'%';
+    const vMode = Settings.data.audio.voiceMode || 'vad';
+    document.getElementById('setVoiceMode').value = vMode;
+    const vSens = (Settings.data.audio.voiceSensitivity!=null) ? Settings.data.audio.voiceSensitivity : 0.5;
+    document.getElementById('setVoiceSens').value = vSens;
+    document.getElementById('setVoiceSensVal').textContent = Math.round(vSens*100)+'%';
+    updateVoiceModeRows(vMode);
     if(typeof updateVoiceUI==='function') updateVoiceUI();
     renderSettingsBindings();
     // "Leave game" only makes sense mid-round.
@@ -5793,6 +5906,17 @@ const Game=(()=>{
       const v = parseFloat(e.target.value); Settings.data.audio.chat = v;
       $('setVolChatVal').textContent = Math.round(v*100)+'%';
       applyVoiceVolume(); Settings.save();
+    });
+    $('setVoiceMode')?.addEventListener('change', e => {
+      Settings.data.audio.voiceMode = e.target.value; Settings.save();
+      updateVoiceModeRows(e.target.value);
+      voiceControlTick();   // apply the new gating immediately
+      updateVoiceUI();      // show/hide the on-screen PTT button
+    });
+    $('setVoiceSens')?.addEventListener('input', e => {
+      const v = parseFloat(e.target.value); Settings.data.audio.voiceSensitivity = v;
+      $('setVoiceSensVal').textContent = Math.round(v*100)+'%';
+      Settings.save();
     });
   }
   wireSettingsInputs();
