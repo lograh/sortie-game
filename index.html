@@ -1771,6 +1771,21 @@ const Game=(()=>{
       if(viaPeerKey) Net.directRoutes[from] = viaPeerKey;
       if(typeof refreshLobbyMP==='function') refreshLobbyMP();
       if(typeof addLobbyChatLine==='function') addLobbyChatLine('* '+(m.name||from.slice(0,4))+' joined','sys');
+    } else if(m.kind==='rename'){
+      // A peer changed their display name live — update both rosters and the UI,
+      // no leave/rejoin needed. (In-game names also ride every 'state' msg, but this
+      // updates them instantly and covers peers sitting in the lobby.)
+      const newName = (m.name||'').toString().slice(0,24) || ('P-'+from.slice(0,3));
+      const lp = state.lobbyPeers[from];
+      const oldName = (lp && lp.name) || (state.players[from] && state.players[from].name) || from.slice(0,4);
+      if(lp) lp.name = newName;
+      if(state.players[from]) state.players[from].name = newName;
+      if(typeof refreshLobbyMP==='function') refreshLobbyMP();
+      if(oldName!==newName){
+        const line = '* '+oldName+' is now '+newName;
+        if(state.mode==='playing'){ if(typeof chatLine==='function') chatLine(line); }
+        else if(typeof addLobbyChatLine==='function') addLobbyChatLine(line,'sys');
+      }
     } else if(m.kind==='lobby_chat'){
       if(typeof addLobbyChatLine==='function') addLobbyChatLine((m.name||from.slice(0,4))+': '+(m.text||''));
     } else if(m.kind==='start_game'){
@@ -6201,12 +6216,20 @@ const Game=(()=>{
   } catch(_) {
     document.getElementById('pname').value='P-'+state.me.id.slice(0,3);
   }
-  document.getElementById('pname').addEventListener('change', e=>{
-    try{ localStorage.setItem(NAME_KEY, e.target.value); }catch(_){}
-  });
-  document.getElementById('pname').addEventListener('blur', e=>{
-    try{ localStorage.setItem(NAME_KEY, e.target.value); }catch(_){}
-  });
+  let _lastBroadcastName = null;
+  function commitName(val){
+    const name = (val||'').toString().slice(0,24) || ('P-'+state.me.id.slice(0,3));
+    try{ localStorage.setItem(NAME_KEY, name); }catch(_){}
+    state.me.name = name;
+    // Push the new name to everyone live — no leave/rejoin required.
+    if(name!==_lastBroadcastName){
+      _lastBroadcastName = name;
+      try{ Net.broadcast({kind:'rename', name}); }catch(_){}
+      if(typeof refreshLobbyMP==='function') refreshLobbyMP();
+    }
+  }
+  document.getElementById('pname').addEventListener('change', e=>commitName(e.target.value));
+  document.getElementById('pname').addEventListener('blur', e=>commitName(e.target.value));
   // Open the net-debug panel automatically if the URL asks for it (#debug or #room=X&debug).
   if(/debug/i.test(location.hash)) { try { toggleDebug(); } catch(_){} }
   consumeInboundHash();
