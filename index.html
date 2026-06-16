@@ -5437,7 +5437,10 @@ const Game=(()=>{
         intens += Math.min(0.30, nearbyHostiles*0.13);     // danger nearby even before shots land
         if(state.kingActive) intens += 0.20;
         if(inRadioactiveNebula(me2.x,me2.y)) intens += 0.12;
-        if(me2.hp/me2.maxHp < 0.25) intens += 0.15;        // low HP raises tension
+        // Critical HP (the red-border alarm, <25%) sustains tension on its own — even after
+        // you've broken off the fight — ramping from +0.18 at the threshold to +0.40 near death.
+        const hpFrac = me2.hp/me2.maxHp;
+        if(hpFrac < 0.25) intens += 0.18 + (0.25 - hpFrac)/0.25 * 0.22;
       }
       Music.setIntensity(Math.min(1, intens));
     }
