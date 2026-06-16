@@ -1532,6 +1532,20 @@ const Game=(()=>{
   function myDisplayName(){
     return state.me.name || document.getElementById('pname')?.value || ('P-'+state.me.id.slice(0,3));
   }
+  // How many human peers we have — works under BOTH the legacy manual-handshake path
+  // (Net.peers) and Trystero (state.lobbyPeers, populated by lobby_join introductions).
+  // The legacy Net.peers map is always empty under Trystero, so any feature that counted
+  // it directly silently saw "0 peers". Pass {live:true} to exclude one-way/stale peers
+  // we can't actually hear back from (so we don't wait on a dead link).
+  function humanPeerCount(opts){
+    const legacy = Object.keys(Net.peers).length;
+    let trystero = 0;
+    if(_trysteroRoom){
+      const ids = Object.keys(state.lobbyPeers);
+      trystero = (opts && opts.live) ? ids.filter(id => !state.lobbyPeers[id]._stale).length : ids.length;
+    }
+    return Math.max(legacy, trystero);
+  }
   // Targeted self-introduction so a newcomer learns who we are + gets shared state.
   function sendIntroTo(tpeer){
     if(!_trysteroSend) return;
@@ -2390,7 +2404,10 @@ const Game=(()=>{
       state.infectionEnded = false;
     }
     if(state.gameMode==='race'){
-      const peerCount=Object.keys(Net.peers).length;
+      // Count human peers via Trystero (lobbyPeers), not the dead legacy Net.peers map —
+      // otherwise multiplayer races always took the solo branch and never synced their start.
+      // {live:true}: don't wait on one-way peers we can't hear (the 10s timeout still backstops).
+      const peerCount=humanPeerCount({live:true});
       if(peerCount>0){
         state.raceCountdown = -1; // waiting on peer ready signals
         state.raceExpectedReadies = peerCount;
