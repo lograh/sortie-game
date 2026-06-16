@@ -1907,6 +1907,7 @@ const Game=(()=>{
         } else {
           addLobbyChatLine('* a player left','sys');
         }
+        if(state.bracket && typeof bracketPeerGone==='function') bracketPeerGone(sortie);   // fast forfeit (markPeerDropped is the 30s backstop)
         refreshLobbyMP();
       }
     };
@@ -2238,16 +2239,14 @@ const Game=(()=>{
         if(state.mode==='playing'){ chatLine('* '+nm+' left the game'); if(typeof killFeed==='function') killFeed(nm+' left'); }
         else if(typeof addLobbyChatLine==='function') addLobbyChatLine('* '+nm+' left the game','sys');
       }
-    } else if(m.kind==='bracket_match'){
-      applyBracketMatch(from, m);          // host assigned me a tournament match
+    } else if(m.kind==='bracket_init'){
+      applyBracketInit(from, m);           // the fixed entrant list → build the bracket locally
     } else if(m.kind==='bracket_result'){
-      onBracketResult(from, m);            // (host only) a match winner was reported
+      onBracketResultMsg(from, m);         // a match winner — apply deterministically + advance
     } else if(m.kind==='repair_offer'){
       onRepairOffer(from, m);              // someone wants to stand up a direct link to us
     } else if(m.kind==='repair_answer'){
       onRepairAnswer(from, m);
-    } else if(m.kind==='bracket_state'){
-      applyBracketState(from, m);          // mirror the host's authoritative bracket
     } else if(m.kind==='rtt_ping'){
       Net.broadcast({kind:'rtt_pong', t:m.t, target:from});
     } else if(m.kind==='rtt_pong'){
@@ -2436,7 +2435,7 @@ const Game=(()=>{
     // Elect a new owner for any bots the dropped peer was driving.
     if(state.mode==='playing' && isAdopterFor(id)) adoptOrphanedEntities(id);
     // In a tournament, a dropped player forfeits their live match to the opponent.
-    if(state.bracket && state.bracketHostId===state.me.id && typeof bracketForfeit==='function') bracketForfeit(id);
+    if(state.bracket && typeof bracketPeerGone==='function') bracketPeerGone(id);
   }
 
   // Gracefully tear down every direct connection. Remote peers see clean dc.onclose
@@ -2481,6 +2480,7 @@ const Game=(()=>{
       lp._stale = (now - since > PEER_LOBBY_GRACE_MS) && (ago > PEER_LOBBY_STALE_MS);
     }
     maybeRepairLinks(now);   // self-heal broken direct links via manual WebRTC (any mode)
+    if(state.bracket && state.bracket.status!=='done' && typeof bracketTick==='function') bracketTick();   // advance the tournament (deterministic, every client)
     if(state.mode==='lobby'){
       updateRoundWaitUI(now);
       if(typeof refreshLobbyMP==='function') refreshLobbyMP();
@@ -5961,59 +5961,57 @@ const Game=(()=>{
   }
 
   // Soft reset — return to lobby while keeping the WebRTC mesh and design library intact.
-  /* ===================== Brackets — tournament coordinator (host-authoritative) =====================
-     The host owns `state.bracket` (a match graph); peers mirror read-only snapshots. Each match's
-     two slots come from a source: {seed:i} | {winnerOf:key} | {loserOf:key}. When a winner is set we
-     propagate into dependent slots; any match with both slots filled and no winner is "ready" and runs
-     (in parallel with other ready matches). AI-vs-AI is auto-resolved by the host; human matches are
-     assigned out and report back. Double-elim: WB winners advance, WB losers drop to the LB, LB losers
-     are out, grand final (+ reset) decides the champion. */
+  /* ===================== Brackets — distributed, deterministic tournament =====================
+     No single owner / no host SPOF. The starter broadcasts the ordered entrant list ONCE
+     (bracket_init); every client builds the identical match graph from it and runs the same engine.
+     Each match's two slots come from a source: {seed:i} | {winnerOf:key} | {loserOf:key}; a winner
+     propagates into dependent slots. RESULTS are the only non-deterministic input — they're broadcast
+     to everyone and applied identically (slot-fills are commutative → converge in any order). AI-vs-AI,
+     byes, arena seeds and the champion are all derived deterministically, so any subset of players can
+     keep advancing and a dropped player (even the starter) is a non-event. Each client self-starts the
+     ready match it is in. */
   function nextPow2(n){ let p=2; while(p<n) p*=2; return p; }
-  function mkMatch(key,aSrc,bSrc){ return {key,aSrc,bSrc,a:null,b:null,winner:null,assigned:false,seed:0}; }
+  function mkMatch(key,aSrc,bSrc){ return {key,aSrc,bSrc,a:null,b:null,winner:null}; }
   function hashKey(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619); } return h>>>0; }
+  function matchSeed(key){ return hashKey('arena:'+key) || 1; }   // deterministic per-match arena (both sides agree)
 
-  function buildBracket(humanIds){
-    const N=Math.max(2, nextPow2(humanIds.length));
-    const entrants=[];
-    for(const id of humanIds){
-      const nm = (state.lobbyPeers[id] && state.lobbyPeers[id].name) || (id===state.me.id ? (state.me.name||'You') : ('P-'+id.slice(0,3)));
-      entrants.push({id, name:nm, kind:'human'});
-    }
+  // The entrant list is fixed ONCE by the starter (humans sorted by id for cross-client agreement,
+  // then AI fill to a power of two) and broadcast — so every client shares the exact same ids.
+  function makeEntrants(humanIds){
+    const ids=[...new Set(humanIds)].sort();
+    const N=Math.max(2, nextPow2(ids.length));
+    const entrants=ids.map(id=>({ id, kind:'human',
+      name:(state.lobbyPeers[id] && state.lobbyPeers[id].name) || (id===state.me.id ? (state.me.name||'You') : ('P-'+id.slice(0,3))) }));
     let ai=1; while(entrants.length<N) entrants.push({id:'ai_'+rid(), name:'AI-'+(ai++), kind:'ai'});
-    const k=Math.round(Math.log2(N));
+    return entrants;
+  }
+  // Build the (deterministic) double-elim match graph from a fixed entrant list.
+  function buildBracketFromEntrants(entrants, goal, mins){
+    const N=entrants.length, k=Math.round(Math.log2(N));
     const matches={}, order=[];
     const add=(m)=>{ matches[m.key]=m; order.push(m.key); return m; };
-    // Winners bracket. R0 pairs seed i vs N-1-i (AI fills, the high seeds, face top humans first).
     const wb=[]; wb[0]=[];
-    for(let i=0;i<N/2;i++) wb[0].push(add(mkMatch('wb-0-'+i,{seed:i},{seed:N-1-i})));
-    for(let r=1;r<k;r++){
-      wb[r]=[]; const cnt=N/Math.pow(2,r+1);
-      for(let i=0;i<cnt;i++) wb[r].push(add(mkMatch('wb-'+r+'-'+i,{winnerOf:'wb-'+(r-1)+'-'+(2*i)},{winnerOf:'wb-'+(r-1)+'-'+(2*i+1)})));
-    }
-    // Losers bracket (standard alternating minor/major construction).
+    for(let i=0;i<N/2;i++) wb[0].push(add(mkMatch('wb-0-'+i,{seed:i},{seed:N-1-i})));   // seed i vs N-1-i
+    for(let r=1;r<k;r++){ wb[r]=[]; const cnt=N/Math.pow(2,r+1);
+      for(let i=0;i<cnt;i++) wb[r].push(add(mkMatch('wb-'+r+'-'+i,{winnerOf:'wb-'+(r-1)+'-'+(2*i)},{winnerOf:'wb-'+(r-1)+'-'+(2*i+1)}))); }
     const drops=(r)=> wb[r].map(m=>({loserOf:m.key}));
     let lbChampSrc;
-    if(N===2){ lbChampSrc=drops(0)[0]; }   // sole WB loser is LB champ; no LB match
+    if(N===2){ lbChampSrc=drops(0)[0]; }
     else {
       let lbIdx=0, current;
       { const d0=drops(0), row=[]; for(let i=0;i<d0.length/2;i++) row.push(add(mkMatch('lb-'+lbIdx+'-'+i,d0[2*i],d0[2*i+1]))); current=row.map(m=>({winnerOf:m.key})); lbIdx++; }
       let wbDrop=1;
       while(wbDrop<k || current.length>1){
-        if(wbDrop<k){
-          const dd=drops(wbDrop), row=[];
+        if(wbDrop<k){ const dd=drops(wbDrop), row=[];
           for(let i=0;i<current.length;i++) row.push(add(mkMatch('lb-'+lbIdx+'-'+i,current[i],dd[i])));
-          current=row.map(m=>({winnerOf:m.key})); lbIdx++; wbDrop++;
-        }
-        if(current.length>1){
-          const row=[]; for(let i=0;i<current.length/2;i++) row.push(add(mkMatch('lb-'+lbIdx+'-'+i,current[2*i],current[2*i+1])));
-          current=row.map(m=>({winnerOf:m.key})); lbIdx++;
-        }
+          current=row.map(m=>({winnerOf:m.key})); lbIdx++; wbDrop++; }
+        if(current.length>1){ const row=[]; for(let i=0;i<current.length/2;i++) row.push(add(mkMatch('lb-'+lbIdx+'-'+i,current[2*i],current[2*i+1]))); current=row.map(m=>({winnerOf:m.key})); lbIdx++; }
       }
       lbChampSrc=current[0];
     }
     add(mkMatch('gf',{winnerOf:'wb-'+(k-1)+'-0'}, lbChampSrc));
     add(mkMatch('gf2',{winnerOf:'gf'},{loserOf:'gf'}));   // bracket reset, only played if LB champ wins gf
-    const b={ host:state.me.id, entrants, matches, order, goal:0, mins:0, status:'running', champion:null };
+    const b={ entrants, matches, order, goal:goal||0, mins:mins||0, status:'running', champion:null, results:{} };
     for(const key in matches){ const m=matches[key];
       if(m.aSrc.seed!==undefined) m.a=entrants[m.aSrc.seed].id;
       if(m.bSrc.seed!==undefined) m.b=entrants[m.bSrc.seed].id;
@@ -6031,101 +6029,89 @@ const Game=(()=>{
       if(mt.b==null){ if(mt.bSrc.winnerOf===key) mt.b=m.winner; else if(mt.bSrc.loserOf===key) mt.b=loser; }
     }
   }
-  function onBracketResult(from, msg){
-    const b=state.bracket; if(!b || b.host!==state.me.id) return;
-    hostSetResult(msg.matchKey, msg.winnerId);
+  // Record a result into the log (dedup, first-wins). The deterministic tick APPLIES it once the
+  // match's slots are filled — so results arriving out of dependency order (different relay paths)
+  // simply wait in the log instead of being dropped. Returns true if newly recorded.
+  function recordResult(matchKey, winnerId){
+    const b=state.bracket; if(!b || !b.matches[matchKey] || b.results[matchKey]!=null) return false;
+    b.results[matchKey]=winnerId; return true;
   }
-  function hostSetResult(matchKey, winnerId){
-    const b=state.bracket; const m=b&&b.matches[matchKey];
-    if(!b || !m || m.winner!=null) return;                       // first result wins (dedup)
-    if(winnerId!==m.a && winnerId!==m.b){ console.warn('[bracket] bad winner', matchKey, winnerId); return; }
-    m.winner=winnerId; propagateWinner(b,matchKey); hostTick();
+  // Report a result: record locally, broadcast to everyone, advance.
+  function broadcastResult(matchKey, winnerId){
+    if(recordResult(matchKey, winnerId)){ Net.broadcast({kind:'bracket_result', matchKey, winnerId}); bracketTick(); }
   }
-  function hostTick(){
-    const b=state.bracket; if(!b || b.host!==state.me.id || b.status==='done') return;
-    const gf=b.matches['gf'];
-    if(gf && gf.winner!=null){
-      if(gf.winner===gf.a){ finishTournament(gf.a); return; }
-      const gf2=b.matches['gf2']; if(gf2 && gf2.winner!=null){ finishTournament(gf2.winner); return; }
-    }
+  // Deterministic engine step — runs on EVERY client. Applies recorded results + AI-vs-AI/byes to a
+  // fixpoint (order-independent), detects the champion, and self-starts the ready match this client
+  // is in. Idempotent / safe to call repeatedly.
+  function bracketTick(){
+    const b=state.bracket; if(!b || !b.matches || b.status==='done') return;
     let progressed=true, guard=0;
-    while(progressed && guard++<200){
+    while(progressed && guard++<300){
       progressed=false;
       for(const key of b.order){
         const m=b.matches[key];
-        if(!m || m.winner!=null || m.assigned) continue;
-        if(key==='gf2' && !(gf && gf.winner===gf.b)) continue;   // reset game only if LB champ won gf
-        if(m.a==null || m.b==null) continue;                      // not ready yet
-        const ka=bKind(b,m.a), kb=bKind(b,m.b);
-        m.assigned=true;
-        if(ka==='ai' && kb==='ai'){ m.winner=(hashKey(key)&1)?m.a:m.b; propagateWinner(b,key); progressed=true; }
-        else assignMatchToHumans(m, ka, kb);
+        if(!m || m.winner!=null || m.a==null || m.b==null) continue;       // not ready / already decided
+        if(key==='gf2' && !(b.matches['gf'] && b.matches['gf'].winner===b.matches['gf'].b)) continue;
+        const rec=b.results[key];
+        if(rec!=null){ if(rec===m.a||rec===m.b){ m.winner=rec; propagateWinner(b,key); progressed=true; } }   // apply logged human result
+        else if(bKind(b,m.a)==='ai' && bKind(b,m.b)==='ai'){ m.winner=(hashKey(key)&1)?m.a:m.b; b.results[key]=m.winner; propagateWinner(b,key); progressed=true; }   // AI auto-resolve
       }
     }
-    broadcastBracketState();
-    if(typeof renderBracketView==='function') renderBracketView();
-  }
-  function assignMatchToHumans(m, ka, kb){
-    const b=state.bracket;
-    m.seed=(Math.floor(Math.random()*0x7fffffff))>>>0 || 1;
-    const slots=[{id:m.a,kind:ka,hub:0},{id:m.b,kind:kb,hub:1}];
-    for(let i=0;i<2;i++){
-      const meS=slots[i], opp=slots[1-i];
-      if(meS.kind!=='human') continue;
-      const assign={kind:'bracket_match', matchKey:m.key, seed:m.seed, goal:b.goal, mins:b.mins, hub:meS.hub,
-        opponentId:opp.id, opponentName:bName(b,opp.id), opponentKind:opp.kind};
-      if(meS.id===state.me.id) applyBracketMatch(state.me.id, assign);
-      else Net.sendTo(meS.id, assign);
+    const gf=b.matches['gf'], gf2=b.matches['gf2'];
+    if(gf && gf.winner!=null && (gf.winner===gf.a || (gf2 && gf2.winner!=null))){
+      b.status='done'; b.champion=(gf.winner===gf.a)?gf.a:gf2.winner;
+      if(typeof renderBracketView==='function') renderBracketView();
+      return;
     }
-  }
-  function finishTournament(championId){
-    const b=state.bracket; b.status='done'; b.champion=championId;
-    broadcastBracketState();
-    if(typeof renderBracketView==='function') renderBracketView();
-  }
-  // A participant dropped (30s silence) → forfeit their live match to the opponent.
-  function bracketForfeit(droppedId){
-    const b=state.bracket; if(!b || b.host!==state.me.id || b.status==='done') return;
-    for(const key of b.order){ const m=b.matches[key];
-      if(m.winner==null && m.assigned && (m.a===droppedId||m.b===droppedId)) hostSetResult(key, (m.a===droppedId)?m.b:m.a);
+    // start MY ready match if I'm idle (in standby, not already in a match)
+    if(!state.bracketMatchKey){
+      for(const key of b.order){
+        const m=b.matches[key];
+        if(!m || m.winner!=null || m.a==null || m.b==null) continue;
+        if(key==='gf2' && !(gf && gf.winner===gf.b)) continue;
+        if(m.a===state.me.id || m.b===state.me.id){ startBracketMatch(key); return; }
+      }
     }
-  }
-  function serializeBracket(){
-    const b=state.bracket; if(!b) return null;
-    return { host:b.host, entrants:b.entrants, matches:b.matches, order:b.order, goal:b.goal, mins:b.mins, status:b.status, champion:b.champion };
-  }
-  function broadcastBracketState(){ const snap=serializeBracket(); if(snap) Net.broadcast({kind:'bracket_state', bracket:snap}); }
-  // --- client-side handlers ---
-  function applyBracketMatch(from, m){
-    if(state.bracketHostId && from!==state.bracketHostId && from!==state.me.id) return;   // only the host assigns
-    if(!state.bracket) state.bracket={status:'running',matches:{},entrants:[],order:[]};  // placeholder → isolation active immediately
-    state.bracketHostId = (from===state.me.id)?state.me.id:from;
-    startBracketMatch(m);
-  }
-  function applyBracketState(from, m){
-    state.bracketHostId = (from===state.me.id)?state.me.id:from;
-    if(state.bracketHostId!==state.me.id) state.bracket = m.bracket;   // non-host mirrors; host keeps authoritative
     if(typeof renderBracketView==='function') renderBracketView();
   }
-  // --- host kickoff (from startSolo when gameMode is 'brackets') ---
   function seedBracketCarryFromLobby(){
     if(state.bracketCarry) return;
     state.bracketCarry={ layout: (state.lobby && state.lobby.layout)?cloneLayout(state.lobby.layout):null,
       creds: state.me.creds||50, materials:{iron:0,silicon:0,carbon:0,rare:0}, inventory:{} };
   }
-  function startBracketTournament(){
+  // Build & enter the tournament (called by everyone — locally for the starter, on bracket_init for peers).
+  function enterBracket(entrants, goal, mins){
+    if(state.bracket) return;
+    state.bracket = buildBracketFromEntrants(entrants, goal, mins);
+    state.bracketStandby = true;
+    seedBracketCarryFromLobby();
+    addLobbyChatLine('* tournament started — '+entrants.length+' entrants','sys');
+    bracketTick();
+  }
+  function startBracketTournament(){   // starter, from startSolo
     const goal=Math.max(0,Math.min(999,parseInt(document.getElementById('killgoal').value)||0));
     const mins=Math.max(0,Math.min(60,parseInt(document.getElementById('roundmin').value)||0));
     if(goal<=0 && mins<=0){ alert('Brackets need a kill goal or round length (set one above).'); return; }
-    const humanIds=[state.me.id, ...Object.keys(state.lobbyPeers||{})];
-    const b=buildBracket(humanIds); b.goal=goal; b.mins=mins; b.host=state.me.id;
-    state.bracket=b; state.bracketHostId=state.me.id; state.bracketStandby=true;
-    seedBracketCarryFromLobby();
-    addLobbyChatLine('* tournament started — '+b.entrants.length+' entrants ('+humanIds.length+' human)','sys');
-    broadcastBracketState();
-    hostTick();   // assign round-1 matches (incl. to self)
+    const entrants=makeEntrants([state.me.id, ...Object.keys(state.lobbyPeers||{})]);
+    Net.broadcast({kind:'bracket_init', entrants, goal, mins});   // fix the list for everyone
+    enterBracket(entrants, goal, mins);
   }
-  // Leave/abort a tournament back to the lobby.
+  // --- message handlers ---
+  function applyBracketInit(from, m){ if(!state.bracket && Array.isArray(m.entrants)) enterBracket(m.entrants, m.goal, m.mins); }
+  function onBracketResultMsg(from, m){ if(recordResult(m.matchKey, m.winnerId)) bracketTick(); }
+  // A participant left/dropped → the surviving opponent forfeit-wins and broadcasts it (so the tree
+  // advances). Covers a dropped starter too (no special role to lose).
+  function bracketPeerGone(sid){
+    const b=state.bracket; if(!b || b.status==='done') return;
+    if(state.bracketMatchKey && state.bracketOpponentId===sid){   // my live opponent vanished → I advance
+      const mk=state.bracketMatchKey; saveBracketCarry(); enterStandby();
+      broadcastResult(mk, state.me.id); addLobbyChatLine('* opponent left — you advance','sys'); return;
+    }
+    for(const key of b.order){ const m=b.matches[key];   // a not-yet-started match where I'm the other slot
+      if(m.winner!=null || m.a==null || m.b==null) continue;
+      if((m.a===sid && m.b===state.me.id) || (m.b===sid && m.a===state.me.id)) broadcastResult(key, state.me.id);
+    }
+  }
   function exitBracket(){
     state.bracket=null; state.bracketCarry=null; state.bracketOpponentId=null; state.bracketMatchKey=null;
     state.bracketHostId=null; state.bracketStandby=false; state.bracketAssign=null;
@@ -6134,27 +6120,32 @@ const Game=(()=>{
   }
 
   /* ===================== Brackets — match lifecycle ===================== */
-  // Start one tournament match. `assign` = {matchKey, opponentId, opponentName,
-  // opponentKind:'human'|'ai', seed, goal, mins, hub}. Both human clients get the SAME seed →
-  // identical arena; different `hub` → different spawn. The match runs as a 2-player deathmatch.
-  function startBracketMatch(assign){
+  // Start the tournament match with key `matchKey` (this client must be one of its two slots). Both
+  // participants derive the SAME arena seed from the key → identical world; the slot-a player takes
+  // hub 0, slot-b takes hub 1 → different spawns. Runs as a 2-player deathmatch.
+  function startBracketMatch(matchKey){
+    const b=state.bracket; const m=b && b.matches[matchKey]; if(!m) return;
     if(!state.bracketCarry) seedBracketCarryFromLobby();   // first match: carry the lobby-built ship
+    const iAmA = (m.a===state.me.id);
+    const oppId = iAmA ? m.b : m.a;
+    const oppKind = bKind(b, oppId);
+    const hub = iAmA ? 0 : 1;
+    const seed = matchSeed(matchKey);
     state.bracketStandby=false;
-    state.bracketAssign=assign;
-    state.bracketMatchKey=assign.matchKey;
-    state.bracketOpponentId=(assign.opponentKind==='human')?assign.opponentId:null;
+    state.bracketAssign={matchKey, opponentId:oppId, opponentName:bName(b,oppId), opponentKind:oppKind};
+    state.bracketMatchKey=matchKey;
+    state.bracketOpponentId=(oppKind==='human')?oppId:null;
     state.mode='lobby';                    // satisfy startPlaying's "already playing" guard
     state.platforms=[];                    // force a fresh, seeded per-match world
-    genWorld((assign.seed>>>0)||1);
-    try{ document.getElementById('roundmin').value=assign.mins||0; document.getElementById('killgoal').value=assign.goal||0; }catch(_){}
+    genWorld(seed>>>0||1);
+    try{ document.getElementById('roundmin').value=b.mins||0; document.getElementById('killgoal').value=b.goal||0; }catch(_){}
     const entities=[];
-    if(assign.opponentKind==='ai'){
-      // place the AI opponent across the arena from my hub
-      const h0=state.platforms[0], h1=state.platforms[1];
-      const ax=h1?h1.x:(h0?-h0.x:1500), ay=h1?h1.y:(h0?-h0.y:0);
-      entities.push({id:assign.opponentId, name:assign.opponentName||'AI', team:0, type:'bot', ownerId:state.me.id, wakeTick:0, x:ax, y:ay});
+    if(oppKind==='ai'){
+      const aiHub = state.platforms[iAmA?1:0] || state.platforms[1] || state.platforms[0];
+      entities.push({id:oppId, name:bName(b,oppId), team:0, type:'bot', ownerId:state.me.id, wakeTick:0,
+        x:aiHub?aiHub.x:1500, y:aiHub?aiHub.y:0});
     }
-    state.pendingStart={entities, playerHubs:{[state.me.id]:(assign.hub||0)}, playerSlots:{}, totalRacers:2, isHost:true, ownerId:state.me.id};
+    state.pendingStart={entities, playerHubs:{[state.me.id]:hub}, playerSlots:{}, totalRacers:2, isHost:true, ownerId:state.me.id};
     startPlaying();
     const me=state.players[state.me.id];
     if(me && state.bracketCarry) restoreBracketCarry(me);   // carry creds/ship/materials from prior matches
@@ -6177,12 +6168,12 @@ const Game=(()=>{
     const matchKey = state.bracketMatchKey;
     saveBracketCarry();                                  // snapshot loadout BEFORE the world is cleared
     enterStandby();                                      // go to standby first…
-    sendBracketResult(matchKey, winnerId);               // …then report (host may immediately start my next match if it's ready)
+    broadcastResult(matchKey, winnerId);                 // …apply + tell everyone (any client advances; bracketTick may start my next match)
   }
 
   // Between matches: a peaceful sandbox docked at your hub, so the real hub economy works and you
-  // can spend carried credits/materials before the next match. No enemies, no timer; the next
-  // match (assigned by the host) auto-starts via startBracketMatch. Keeps state.bracket + carry.
+  // can spend carried credits/materials before the next match. No enemies, no timer; bracketTick
+  // auto-starts your next match once it's ready. Keeps state.bracket + carry.
   function enterStandby(){
     state.bracketStandby=true;
     state.bracketMatchKey=null;
@@ -6279,14 +6270,6 @@ const Game=(()=>{
     const el=document.getElementById('bracketPanel'); if(!el) return;
     if(el.style.display==='block'){ el.style.display='none'; }
     else { renderBracketView(true); }
-  }
-
-  // Report this match's winner to the tournament coordinator (host applies locally).
-  function sendBracketResult(matchKey, winnerId){
-    const host=state.bracketHostId;
-    const msg={kind:'bracket_result', matchKey, winnerId};
-    if(host && host===state.me.id){ if(typeof onBracketResult==='function') onBracketResult(state.me.id, msg); }
-    else if(host){ Net.sendTo(host, msg); }
   }
 
   // Replaces the old `location.reload()` so a friend group can play match after match
