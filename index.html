@@ -2020,7 +2020,10 @@ const Game=(()=>{
   // banner clears, and they can Start (or get pulled into the next round via 'start_game').
   function updateRoundWaitUI(now){
     now = now || performance.now();
-    const active = (now - (state._lastRemoteStateAt||0)) < 3000;
+    // Only "active" once we've actually heard a remote 'state' recently. (Guard against the
+    // first few seconds after load, when performance.now() itself is < 3000 and a bare
+    // `now - 0 < 3000` would falsely read as a round in progress.)
+    const active = !!state._lastRemoteStateAt && (now - state._lastRemoteStateAt) < 3000;
     const btn = document.getElementById('startGameBtn');
     const banner = document.getElementById('roundWaitBanner');
     if(active !== state.remoteRoundActive){
