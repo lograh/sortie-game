@@ -353,6 +353,7 @@
             <input id="roomCode" type="text" maxlength="8" placeholder="CODE" autocomplete="off" style="width:90px;text-transform:uppercase;background:#012;color:#cfe;border:1px solid #2af;padding:5px 6px;min-height:30px">
             <button onclick="Game.createRoom()">Create</button>
             <button onclick="Game.joinRoomFromInput()">Join</button>
+            <button id="reconnectBtn" onclick="Game.reconnectRoom()" style="display:none" title="Leave and rejoin to force a fresh direct-connection attempt with everyone (fixes stuck/relay-only peers)">🔄 Reconnect</button>
             <button class="bad" id="leaveMeshBtn" onclick="Game.leaveMesh()" style="display:none">Leave</button>
           </div>
           <div class="row" id="roomShareRow" style="display:none"><button onclick="Game.copyRoomLink()">Copy invite link</button></div>
@@ -1396,6 +1397,39 @@ const Game=(()=>{
     const copy = Object.assign({}, data, { _hops: (data._hops||0)+1 });
     for(const tp in peers){ if(tp===sourceTpeer) continue; try{ _trysteroSend(copy, tp); }catch(_){} }
   }
+  // A peer is DIRECT if we have a live Trystero data channel to it; otherwise we only reach it
+  // through the gossip relay (a broken/missing direct link — Trystero failed that pair).
+  function isDirectPeer(sid){
+    const t=sortieToTrystero[sid]; if(!t || !_trysteroRoom) return false;
+    try{ return !!((_trysteroRoom.getPeers()||{})[t]); }catch(_){ return false; }
+  }
+  function relayOnlyPeerIds(){
+    return Object.keys(state.lobbyPeers).filter(id => id!==state.me.id && !isDirectPeer(id));
+  }
+  // Force a fresh round of WebRTC negotiation by leaving and re-joining the room — Trystero
+  // re-announces our presence so every peer re-attempts a direct connection to us (repairs
+  // transient failures; a fundamentally unconnectable pair still needs TURN).
+  function reconnectRoom(reason){
+    if(!_currentRoomCode){ setLobbyStatus('Not in a room.'); return; }
+    const code=_currentRoomCode;
+    addLobbyChatLine('* '+(reason||'reconnecting')+' — forcing fresh peer negotiation…','sys');
+    leaveTrysteroRoom(true);
+    setTimeout(()=>{ joinTrysteroRoom(code); }, 500);
+  }
+  // Conservative self-heal: if a known peer stays relay-only too long, force one fresh negotiation.
+  // Staggered by our id (so peers don't reconnect in unison), 90s cooldown, max 3 tries per episode
+  // — then we give up and just live on the relay (a truly unconnectable pair needs TURN, not retries).
+  let _relayOnlySince=0, _lastAutoReconnect=0, _autoReconnects=0;
+  function maybeAutoReconnect(now){
+    if(!_trysteroRoom){ _relayOnlySince=0; return; }
+    if(relayOnlyPeerIds().length===0){ _relayOnlySince=0; _autoReconnects=0; return; }
+    if(!_relayOnlySince) _relayOnlySince=now;
+    const wait = 30000 + (hashKey(state.me.id)%12000);
+    if(now-_relayOnlySince>wait && now-_lastAutoReconnect>90000 && _autoReconnects<3){
+      _lastAutoReconnect=now; _autoReconnects++;
+      reconnectRoom('auto-repair ('+_autoReconnects+'/3): a peer link is relay-only');
+    }
+  }
   let _getRelaySockets = null;         // Trystero export: returns {url: WebSocket} of broker sockets
   let _sawAnyPeerJoin = false;         // diagnostic: has onPeerJoin ever fired this session?
   let _lastJoinError = null;           // diagnostic: last Trystero onJoinError detail
@@ -2370,6 +2404,7 @@ const Game=(()=>{
     }
     if(state.mode==='lobby'){
       updateRoundWaitUI(now);
+      maybeAutoReconnect(now);
       if(typeof refreshLobbyMP==='function') refreshLobbyMP();
     }
   }
@@ -6688,11 +6723,15 @@ const Game=(()=>{
     const peerIds = Object.keys(state.lobbyPeers);
     const parts = [`<span class="you">${esc(myName)} (you)</span>`];
     let confirmed = 0;
+    let relayCount = 0;
     for(const id of peerIds){
       const lp = state.lobbyPeers[id];
       const nm = esc(lp.name||id.slice(0,4));
       if(lp._stale){
         parts.push(nm + ' <span style="color:var(--ui-warn,#fb3)" title="Data channel is open but nothing is coming back from this peer — the link is likely one-way (e.g. a phone on cellular behind CGNAT). They may not see the game.">⚠ no reply</span>');
+      } else if(!isDirectPeer(id)){
+        relayCount++;
+        parts.push(nm + ' <span style="color:var(--ui-text-highlight)" title="No direct connection — reaching this peer through another player (gossip relay). Works, but higher latency. Tap Reconnect to retry a direct link.">⤳ relay</span>');
       } else {
         confirmed++;
         parts.push(nm + ' <span style="color:var(--ui-good-bright)">✓</span>');
@@ -6700,14 +6739,17 @@ const Game=(()=>{
     }
     let html = 'Players: ' + parts.join(', ');
     if(_currentRoomCode){
-      const unconfirmed = peerIds.length - confirmed;
-      html += '<br><span class="dim" style="font-size:11px">Room <b>'+esc(_currentRoomCode)+'</b> · '+(confirmed+1)+' connected'
+      const unconfirmed = peerIds.length - confirmed - relayCount;
+      html += '<br><span class="dim" style="font-size:11px">Room <b>'+esc(_currentRoomCode)+'</b> · '+(confirmed+1)+' direct'
+        + (relayCount>0 ? (' · <span style="color:var(--ui-text-highlight)">'+relayCount+' via relay</span>') : '')
         + (unconfirmed>0 ? (' · <span style="color:var(--ui-warn,#fb3)">'+unconfirmed+' one-way</span>') : '')+'</span>';
     }
     el.innerHTML = html;
-    // Leave button visible only while actually in a room.
+    // Leave / Reconnect buttons visible only while actually in a room.
     const leaveBtn = document.getElementById('leaveMeshBtn');
     if(leaveBtn) leaveBtn.style.display = _trysteroRoom ? '' : 'none';
+    const recBtn = document.getElementById('reconnectBtn');
+    if(recBtn) recBtn.style.display = _trysteroRoom ? '' : 'none';
   }
   function sendLobbyChat(){
     const inp=document.getElementById('lobbyChatInput'); if(!inp) return;
@@ -6925,7 +6967,7 @@ const Game=(()=>{
   boostEl.addEventListener('pointercancel',()=>{ state.boostHeld=false; boostEl.classList.remove('on'); });
 
   return {
-    startSolo,startTutorial,endTutorial,createRoom,joinRoomFromInput,copyRoomLink,leaveMesh,resetForNextRound,toggleDebug,dbgInspect,dbgClear,dbgCopy,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,openSettings,closeSettings,leaveGame,toggleVoice,toggleBracketPanel,exitBracket,startBindingCapture,resetBindings,
+    startSolo,startTutorial,endTutorial,createRoom,joinRoomFromInput,copyRoomLink,leaveMesh,reconnectRoom,resetForNextRound,toggleDebug,dbgInspect,dbgClear,dbgCopy,toggleHub,toggleMap,toggleChatMenu,quickChat,buyFromTrader,undockTrader,toggleChangelog,openSettings,closeSettings,leaveGame,toggleVoice,toggleBracketPanel,exitBracket,startBindingCapture,resetBindings,
     sellMat,buyItem,repairHub,builderClick,builderRightClick,dragStart,dragDrop,setPlace,gunCfg,applyDesign,deleteDesign,
     lobbySetPlace,lobbyBuilderClick,lobbyGunCfg,lobbySaveDesign,lobbyResetDesign,lobbyLoadDesign,
   };
